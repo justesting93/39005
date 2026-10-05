@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Duty Party Roster</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <div class="title-block">
+      <p class="eyebrow">DP1 · DP2 · DP3</p>
+      <h1>Duty Party Roster</h1>
+    </div>
+    <div class="header-actions">
+      <label class="fy-control" id="fy-control">Financial year
+        <select id="fy-select"></select>
+      </label>
+      <button type="button" id="restore" class="secondary">Restore sample</button>
+    </div>
+    <nav aria-label="Sections">
+      <button type="button" data-tab="members" class="is-on" aria-pressed="true">Members</button>
+      <button type="button" data-tab="events" aria-pressed="false">Events</button>
+      <button type="button" data-tab="training" aria-pressed="false">Training</button>
+      <button type="button" data-tab="assign" aria-pressed="false">Assign</button>
+      <button type="button" data-tab="selection" aria-pressed="false">Selection report</button>
+      <button type="button" data-tab="hours" aria-pressed="false">Hours report</button>
+    </nav>
+  </header>
+  <main>
+    <div id="banner" class="banner" role="status">Loading roster…</div>
+
+    <section data-panel="members">
+      <div class="panel-head">
+        <h2>Members</h2>
+        <p>Each member belongs to one duty party. Queue order is the starting order inside that party, before any duty moves people to the back. Attends hours are training plus assigned duty for the financial year above.</p>
+      </div>
+      <form id="member-form" class="inline-form">
+        <label>Member ID <input name="member_id" required maxlength="32" autocomplete="off"></label>
+        <label>Duty party
+          <select name="party">
+            <option>DP1</option>
+            <option>DP2</option>
+            <option>DP3</option>
+          </select>
+        </label>
+        <button type="submit">Add member</button>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Member ID</th>
+              <th>Duty party</th>
+              <th>Queue</th>
+              <th>Attends hours</th>
+              <th>Training</th>
+              <th>Duty hours</th>
+              <th>Duties</th>
+              <th>Requirement</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="member-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section data-panel="events" hidden>
+      <div class="panel-head">
+        <h2>Events</h2>
+        <p>A duty has a code, a start, an end, and the number of members required. Hours are the time between start and end.</p>
+      </div>
+      <form id="event-form" class="inline-form">
+        <label>Duty code <input name="duty_code" required maxlength="32" autocomplete="off"></label>
+        <label>Duty start <input name="start_datetime" type="datetime-local" required></label>
+        <label>Duty end <input name="end_datetime" type="datetime-local" required></label>
+        <label>Required members <input name="required_members" type="number" min="1" max="500" value="1" required></label>
+        <button type="submit">Add event</button>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Duty code</th>
+              <th>Duty start</th>
+              <th>Duty end</th>
+              <th>Hours</th>
+              <th>Required members</th>
+              <th>Applied</th>
+              <th>Assigned</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="event-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section data-panel="training" hidden>
+      <div class="panel-head">
+        <h2>Training</h2>
+        <p>Training hours count toward the 60-hour year and toward the rule of attending at least 30% of the training hours offered. Tick the members who attended.</p>
+      </div>
+      <form id="training-form" class="inline-form">
+        <label>Training code <input name="training_code" required maxlength="32" autocomplete="off"></label>
+        <label>Start <input name="start_datetime" type="datetime-local" required></label>
+        <label>End <input name="end_datetime" type="datetime-local" required></label>
+        <button type="submit">Add training</button>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Training code</th>
+              <th>Start</th>
+              <th>End</th>
+              <th>Hours</th>
+              <th>Attended</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="training-rows"></tbody>
+        </table>
+      </div>
+      <div id="attendance-panel"></div>
+    </section>
+
+    <section data-panel="assign" hidden>
+      <div class="panel-head">
+        <h2>Assign</h2>
+        <p>A member is eligible only after the applied checkbox is ticked, and only if they are free of an overlapping duty.</p>
+        <ol class="rules">
+          <li><strong>Standard</strong> walks the rolling list only. Duty parties take turns, then members take turns inside the party.</li>
+          <li><strong>Assign</strong> uses three priorities: members who have not met this financial year's hours, fewest attend hours first; then fewer duties so far this year; then the same rolling list.</li>
+        </ol>
+      </div>
+      <details class="sample">
+        <summary>How the sample roster behaves</summary>
+        <p>Twelve members: DP1 is P1–P4, DP2 is P5–P8, DP3 is P9–P12. Everyone has applied for E1–E4. P3 missed induction. P1 also attended the 60-hour camp, so P1 has already met the annual requirement.</p>
+        <p>Standard, in date order, selects E1: P1, P2 · E2: P5 · E3: P9, P10, P11 · E4: P3.</p>
+        <p>Assign on E1, before those results are saved, selects P3 then P2. P3 has 0 attend hours. P1 is left off because the requirement is already met.</p>
+      </details>
+      <div id="assign-body"></div>
+    </section>
+
+    <section data-panel="selection" hidden>
+      <div class="panel-head">
+        <h2>Selection report</h2>
+        <p>How and why each member was selected, from the figures at the moment of assignment.</p>
+        <div class="no-print button-row">
+          <button type="button" id="print-selection" class="secondary">Print</button>
+          <button type="button" id="csv-selection" class="secondary">Download CSV</button>
+        </div>
+      </div>
+      <div id="selection-report"></div>
+    </section>
+
+    <section data-panel="hours" hidden>
+      <div class="panel-head">
+        <h2>Hours report</h2>
+        <p>Attends hours for the financial year, 1 April through 31 March. A session counts in the year it starts.</p>
+        <div class="no-print button-row">
+          <button type="button" id="print-hours" class="secondary">Print</button>
+          <button type="button" id="csv-hours" class="secondary">Download CSV</button>
+        </div>
+      </div>
+      <div id="hours-report"></div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
