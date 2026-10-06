@@ -26,8 +26,24 @@ def test_member_and_event_crud(tmp_path):
     assert [item["member_id"] for item in listing] == ["P2", "P1"]
     assert moved.get_json()["queue_order"] == 1
 
-    party = client.put(f"/api/members/{member['id']}", json={"party": "DP2"})
+    party = client.put(f"/api/members/{member['id']}", json={"party": "DP2", "name": "Ada"})
     assert party.get_json()["party"] == "DP2"
+    assert party.get_json()["name"] == "Ada"
+
+    imported = client.post(
+        "/api/members/import",
+        json={"rows": [{"member_id": "P1", "name": "Ada Lovelace"}, {"member_id": "P9", "name": "Grace"}]},
+    )
+    assert imported.status_code == 200
+    body = imported.get_json()
+    assert body["updated"] == 1
+    assert body["created"] == 1
+    names = {item["member_id"]: item["name"] for item in body["members"]}
+    assert names["P1"] == "Ada Lovelace"
+    assert names["P9"] == "Grace"
+    parties = {item["member_id"]: item["party"] for item in body["members"]}
+    assert parties["P9"] == "DP1"
+    assert parties["P1"] == "DP2"
 
     duplicate = client.post("/api/members", json={"member_id": "P2", "party": "DP3"})
     assert duplicate.status_code == 400
@@ -213,3 +229,88 @@ def test_edited_times_flag_an_overlap(tmp_path):
     flags = {event["duty_code"]: event["conflict"] for event in client.get("/api/events").get_json()["events"]}
     assert flags["A"] is True
     assert flags["B"] is True
+
+
+def test_remarks_import_partial_hours_and_roster_file(tmp_path):
+    client = client_for(tmp_path)
+    client.post("/api/members", json={"member_id": "P1", "party": "DP1", "name": "Ada"})
+    duty = client.post(
+        "/api/events",
+        json={
+            "duty_code": "E1",
+            "start_datetime": "2026-10-06T09:00",
+            "end_datetime": "2026-10-06T13:00",
+            "required_members": 1,
+            "remarks": "Gate",
+        },
+    )
+    assert duty.status_code == 201
+    assert duty.get_json()["remarks"] == "Gate"
+    training = client.post(
+        "/api/trainings",
+        json={
+            "training_code": "TR1",
+            "start_datetime": "2026-04-15T09:00",
+            "end_datetime": "2026-04-15T13:00",
+            "remarks": "Hall",
+        },
+    ).get_json()
+    client.put(f"/api/trainings/{training['id']}/attendees", json={"member_ids": ["P1"]})
+    shortened = client.put(
+        f"/api/trainings/{training['id']}/hours",
+        json={"member_id": "P1", "hours": 2},
+    )
+    assert shortened.status_code == 200
+    assert shortened.get_json()["attendees"][0]["hours"] == 2
+    too_long = client.put(
+        f"/api/trainings/{training['id']}/hours",
+        json={"member_id": "P1", "hours": 9},
+    )
+    assert too_long.status_code == 400
+
+    event = duty.get_json()
+    client.put(f"/api/events/{event['id']}/applications", json={"member_ids": ["P1"]})
+    client.post(f"/api/events/{event['id']}/assignment", json={"method": "standard"})
+    duty_hours = client.put(f"/api/events/{event['id']}/hours", json={"member_id": "P1", "hours": 1.5})
+    assert duty_hours.status_code == 200
+    member = next(item for item in duty_hours.get_json()["members"] if item["member_id"] == "P1")
+    assert member["duty_attend_hours"] == 1.5
+
+    report = {row["member_id"]: row for row in client.get("/api/reports/hours?fy=2026").get_json()["rows"]}
+    assert report["P1"]["training_hours"] == 2
+    assert report["P1"]["duty_hours"] == 1.5
+    assert report["P1"]["trainings"][0]["remarks"] == "Hall"
+    assert report["P1"]["duties"][0]["attend_hours"] == 1.5
+
+    imported = client.post(
+        "/api/events/import",
+        json={
+            "rows": [
+                {
+                    "duty_code": "E1",
+                    "start_datetime": "2026-10-06T09:00",
+                    "end_datetime": "2026-10-06T13:00",
+                    "required_members": 1,
+                    "remarks": "Updated gate",
+                },
+                {
+                    "duty_code": "E2",
+                    "start_datetime": "2026-10-07T09:00",
+                    "end_datetime": "2026-10-07T12:00",
+                    "required_members": 1,
+                    "remarks": "",
+                },
+            ]
+        },
+    )
+    assert imported.status_code == 200
+    assert imported.get_json()["updated"] == 1
+    assert imported.get_json()["created"] == 1
+
+    saved = client.get("/api/roster").get_json()
+    saved["members"][0]["name"] = "Grace"
+    opened = client.post("/api/roster", json=saved)
+    assert opened.status_code == 200
+    assert opened.get_json()["members"][0]["name"] == "Grace"
+    assert opened.get_json()["duties"][0]["remarks"] == "Updated gate"
+    assert opened.get_json()["trainings"][0]["attendees"][0]["hours"] == 2

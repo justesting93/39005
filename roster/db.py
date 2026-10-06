@@ -16,6 +16,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS members (
     id INTEGER PRIMARY KEY,
     member_code TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    name TEXT NOT NULL DEFAULT '',
     party TEXT NOT NULL CHECK (party IN ('DP1', 'DP2', 'DP3')),
     queue_order INTEGER NOT NULL CHECK (queue_order >= 1)
 );
@@ -30,7 +31,8 @@ CREATE TABLE IF NOT EXISTS events (
         assignment_method IN ('standard', 'assign') OR assignment_method IS NULL
     ),
     assignment_log TEXT,
-    assigned_at TEXT
+    assigned_at TEXT,
+    remarks TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS applications (
@@ -43,6 +45,7 @@ CREATE TABLE IF NOT EXISTS assignments (
     event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
     member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
     pick_index INTEGER NOT NULL,
+    hours REAL,
     PRIMARY KEY (event_id, member_id)
 );
 
@@ -50,12 +53,14 @@ CREATE TABLE IF NOT EXISTS trainings (
     id INTEGER PRIMARY KEY,
     training_code TEXT NOT NULL COLLATE NOCASE UNIQUE,
     start_dt TEXT NOT NULL,
-    end_dt TEXT NOT NULL
+    end_dt TEXT NOT NULL,
+    remarks TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS training_attendance (
     training_id INTEGER NOT NULL REFERENCES trainings(id) ON DELETE CASCADE,
     member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    hours REAL,
     PRIMARY KEY (training_id, member_id)
 );
 """
@@ -68,7 +73,8 @@ class Snapshot:
     applications: dict[int, set[str]] = field(default_factory=dict)
     assignments: dict[int, list[str]] = field(default_factory=dict)
     trainings: list[Training] = field(default_factory=list)
-    attendance: dict[int, set[str]] = field(default_factory=dict)
+    attendance: dict[int, dict[str, float | None]] = field(default_factory=dict)
+    assignment_hours: dict[int, dict[str, float | None]] = field(default_factory=dict)
 
     def event(self, event_id: int) -> Event | None:
         return next((item for item in self.events if item.id == event_id), None)
@@ -103,20 +109,39 @@ class Database:
     def migrate(self) -> None:
         with self.session() as connection:
             connection.executescript(SCHEMA)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(members)")}
+            if "name" not in columns:
+                connection.execute("ALTER TABLE members ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+            event_columns = {row[1] for row in connection.execute("PRAGMA table_info(events)")}
+            if "remarks" not in event_columns:
+                connection.execute("ALTER TABLE events ADD COLUMN remarks TEXT NOT NULL DEFAULT ''")
+            training_columns = {row[1] for row in connection.execute("PRAGMA table_info(trainings)")}
+            if "remarks" not in training_columns:
+                connection.execute("ALTER TABLE trainings ADD COLUMN remarks TEXT NOT NULL DEFAULT ''")
+            assignment_columns = {row[1] for row in connection.execute("PRAGMA table_info(assignments)")}
+            if "hours" not in assignment_columns:
+                connection.execute("ALTER TABLE assignments ADD COLUMN hours REAL")
+            attendance_columns = {row[1] for row in connection.execute("PRAGMA table_info(training_attendance)")}
+            if "hours" not in attendance_columns:
+                connection.execute("ALTER TABLE training_attendance ADD COLUMN hours REAL")
 
     def load(self) -> Snapshot:
         with self.session() as connection:
             members = [
-                Member(row["id"], row["member_code"], row["party"], row["queue_order"])
+                Member(row["id"], row["member_code"], row["party"], row["queue_order"], row["name"] or "")
                 for row in connection.execute(
-                    "SELECT id, member_code, party, queue_order FROM members ORDER BY party, queue_order, member_code"
+                    """
+                    SELECT id, member_code, name, party, queue_order
+                    FROM members
+                    ORDER BY party, queue_order, member_code
+                    """
                 )
             ]
             events = []
             for row in connection.execute(
                 """
                 SELECT id, duty_code, start_dt, end_dt, required_members,
-                       assignment_method, assignment_log, assigned_at
+                       assignment_method, assignment_log, assigned_at, remarks
                 FROM events
                 ORDER BY start_dt, id
                 """
@@ -132,6 +157,7 @@ class Database:
                         row["assignment_method"],
                         log,
                         row["assigned_at"],
+                        row["remarks"] or "",
                     )
                 )
             applications: dict[int, set[str]] = {}
@@ -144,42 +170,57 @@ class Database:
             ):
                 applications.setdefault(row["event_id"], set()).add(row["member_code"])
             assignments: dict[int, list[str]] = {}
+            assignment_hours: dict[int, dict[str, float | None]] = {}
             for row in connection.execute(
                 """
-                SELECT s.event_id, m.member_code
+                SELECT s.event_id, m.member_code, s.hours
                 FROM assignments s
                 JOIN members m ON m.id = s.member_id
                 ORDER BY s.event_id, s.pick_index
                 """
             ):
                 assignments.setdefault(row["event_id"], []).append(row["member_code"])
+                assignment_hours.setdefault(row["event_id"], {})[row["member_code"]] = (
+                    None if row["hours"] is None else float(row["hours"])
+                )
             trainings = [
                 Training(
                     row["id"],
                     row["training_code"],
                     parse_dt(row["start_dt"], "Training start"),
                     parse_dt(row["end_dt"], "Training end"),
+                    row["remarks"] or "",
                 )
                 for row in connection.execute(
                     """
-                    SELECT id, training_code, start_dt, end_dt
+                    SELECT id, training_code, start_dt, end_dt, remarks
                     FROM trainings
                     ORDER BY start_dt, id
                     """
                 )
             ]
-            attendance: dict[int, set[str]] = {}
+            attendance: dict[int, dict[str, float | None]] = {}
             for row in connection.execute(
                 """
-                SELECT t.training_id, m.member_code
+                SELECT t.training_id, m.member_code, t.hours
                 FROM training_attendance t
                 JOIN members m ON m.id = t.member_id
                 """
             ):
-                attendance.setdefault(row["training_id"], set()).add(row["member_code"])
-        return Snapshot(members, events, applications, assignments, trainings, attendance)
+                attendance.setdefault(row["training_id"], {})[row["member_code"]] = (
+                    None if row["hours"] is None else float(row["hours"])
+                )
+        return Snapshot(
+            members,
+            events,
+            applications,
+            assignments,
+            trainings,
+            attendance,
+            assignment_hours,
+        )
 
-    def insert_member(self, member_code: str, party: str) -> int:
+    def insert_member(self, member_code: str, party: str, name: str = "") -> int:
         if party not in PARTIES:
             raise ValueError("Duty party must be DP1, DP2, or DP3")
         with self.session() as connection:
@@ -189,8 +230,8 @@ class Database:
             ).fetchone()["next_order"]
             try:
                 cursor = connection.execute(
-                    "INSERT INTO members (member_code, party, queue_order) VALUES (?, ?, ?)",
-                    (member_code, party, order),
+                    "INSERT INTO members (member_code, name, party, queue_order) VALUES (?, ?, ?, ?)",
+                    (member_code, name, party, order),
                 )
             except sqlite3.IntegrityError as exc:
                 raise ValueError("Member ID already exists") from exc
@@ -201,6 +242,7 @@ class Database:
         member_id: int,
         *,
         member_code: str | None = None,
+        name: str | None = None,
         party: str | None = None,
         queue_order: int | None = None,
     ) -> None:
@@ -209,13 +251,14 @@ class Database:
             if row is None:
                 raise NotFound("Member not found")
             new_code = row["member_code"] if member_code is None else member_code
+            new_name = row["name"] if name is None else name
             new_party = row["party"] if party is None else party
             if new_party not in PARTIES:
                 raise ValueError("Duty party must be DP1, DP2, or DP3")
             try:
                 connection.execute(
-                    "UPDATE members SET member_code = ?, party = ? WHERE id = ?",
-                    (new_code, new_party, member_id),
+                    "UPDATE members SET member_code = ?, name = ?, party = ? WHERE id = ?",
+                    (new_code, new_name, new_party, member_id),
                 )
             except sqlite3.IntegrityError as exc:
                 raise ValueError("Member ID already exists") from exc
@@ -253,15 +296,16 @@ class Database:
         start: datetime,
         end: datetime,
         required_members: int,
+        remarks: str = "",
     ) -> int:
         with self.session() as connection:
             try:
                 cursor = connection.execute(
                     """
-                    INSERT INTO events (duty_code, start_dt, end_dt, required_members)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO events (duty_code, start_dt, end_dt, required_members, remarks)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (duty_code, format_dt(start), format_dt(end), required_members),
+                    (duty_code, format_dt(start), format_dt(end), required_members, remarks),
                 )
             except sqlite3.IntegrityError as exc:
                 raise ValueError("Duty code already exists") from exc
@@ -275,6 +319,7 @@ class Database:
         start: datetime,
         end: datetime,
         required_members: int,
+        remarks: str = "",
     ) -> None:
         with self.session() as connection:
             if connection.execute("SELECT 1 FROM events WHERE id = ?", (event_id,)).fetchone() is None:
@@ -283,10 +328,10 @@ class Database:
                 connection.execute(
                     """
                     UPDATE events
-                    SET duty_code = ?, start_dt = ?, end_dt = ?, required_members = ?
+                    SET duty_code = ?, start_dt = ?, end_dt = ?, required_members = ?, remarks = ?
                     WHERE id = ?
                     """,
-                    (duty_code, format_dt(start), format_dt(end), required_members, event_id),
+                    (duty_code, format_dt(start), format_dt(end), required_members, remarks, event_id),
                 )
             except sqlite3.IntegrityError as exc:
                 raise ValueError("Duty code already exists") from exc
@@ -318,14 +363,26 @@ class Database:
     ) -> None:
         with self.session() as connection:
             _require_event(connection, event_id)
+            prior = {
+                row["member_code"].casefold(): row["hours"]
+                for row in connection.execute(
+                    """
+                    SELECT m.member_code, s.hours
+                    FROM assignments s
+                    JOIN members m ON m.id = s.member_id
+                    WHERE s.event_id = ?
+                    """,
+                    (event_id,),
+                )
+            }
             connection.execute("DELETE FROM assignments WHERE event_id = ?", (event_id,))
             for index, code in enumerate(member_codes, start=1):
                 connection.execute(
                     """
-                    INSERT INTO assignments (event_id, member_id, pick_index)
-                    VALUES (?, ?, ?)
+                    INSERT INTO assignments (event_id, member_id, pick_index, hours)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (event_id, _member_db_id(connection, code), index),
+                    (event_id, _member_db_id(connection, code), index, prior.get(code.casefold())),
                 )
             connection.execute(
                 """
@@ -349,12 +406,12 @@ class Database:
                 (event_id,),
             )
 
-    def insert_training(self, training_code: str, start: datetime, end: datetime) -> int:
+    def insert_training(self, training_code: str, start: datetime, end: datetime, remarks: str = "") -> int:
         with self.session() as connection:
             try:
                 cursor = connection.execute(
-                    "INSERT INTO trainings (training_code, start_dt, end_dt) VALUES (?, ?, ?)",
-                    (training_code, format_dt(start), format_dt(end)),
+                    "INSERT INTO trainings (training_code, start_dt, end_dt, remarks) VALUES (?, ?, ?, ?)",
+                    (training_code, format_dt(start), format_dt(end), remarks),
                 )
             except sqlite3.IntegrityError as exc:
                 raise ValueError("Training code already exists") from exc
@@ -367,6 +424,7 @@ class Database:
         training_code: str,
         start: datetime,
         end: datetime,
+        remarks: str = "",
     ) -> None:
         with self.session() as connection:
             if connection.execute(
@@ -377,10 +435,10 @@ class Database:
                 connection.execute(
                     """
                     UPDATE trainings
-                    SET training_code = ?, start_dt = ?, end_dt = ?
+                    SET training_code = ?, start_dt = ?, end_dt = ?, remarks = ?
                     WHERE id = ?
                     """,
-                    (training_code, format_dt(start), format_dt(end), training_id),
+                    (training_code, format_dt(start), format_dt(end), remarks, training_id),
                 )
             except sqlite3.IntegrityError as exc:
                 raise ValueError("Training code already exists") from exc
@@ -397,14 +455,123 @@ class Database:
                 "SELECT 1 FROM trainings WHERE id = ?", (training_id,)
             ).fetchone() is None:
                 raise NotFound("Training not found")
+            prior = {
+                row["member_code"].casefold(): row["hours"]
+                for row in connection.execute(
+                    """
+                    SELECT m.member_code, t.hours
+                    FROM training_attendance t
+                    JOIN members m ON m.id = t.member_id
+                    WHERE t.training_id = ?
+                    """,
+                    (training_id,),
+                )
+            }
             connection.execute(
                 "DELETE FROM training_attendance WHERE training_id = ?", (training_id,)
             )
             for code in dict.fromkeys(member_codes):
                 connection.execute(
-                    "INSERT INTO training_attendance (training_id, member_id) VALUES (?, ?)",
-                    (training_id, _member_db_id(connection, code)),
+                    "INSERT INTO training_attendance (training_id, member_id, hours) VALUES (?, ?, ?)",
+                    (training_id, _member_db_id(connection, code), prior.get(code.casefold())),
                 )
+
+    def set_assignment_hours(self, event_id: int, member_code: str, hours: float | None) -> None:
+        with self.session() as connection:
+            _require_event(connection, event_id)
+            member_id = _member_db_id(connection, member_code)
+            cursor = connection.execute(
+                "UPDATE assignments SET hours = ? WHERE event_id = ? AND member_id = ?",
+                (hours, event_id, member_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("That member is not assigned to this duty")
+
+    def set_attendance_hours(self, training_id: int, member_code: str, hours: float | None) -> None:
+        with self.session() as connection:
+            if connection.execute(
+                "SELECT 1 FROM trainings WHERE id = ?", (training_id,)
+            ).fetchone() is None:
+                raise NotFound("Training not found")
+            member_id = _member_db_id(connection, member_code)
+            cursor = connection.execute(
+                "UPDATE training_attendance SET hours = ? WHERE training_id = ? AND member_id = ?",
+                (hours, training_id, member_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("That member did not attend this training")
+
+    def replace_roster(self, members: list[dict], duties: list[dict], trainings: list[dict]) -> None:
+        with self.session() as connection:
+            for table in (
+                "training_attendance",
+                "assignments",
+                "applications",
+                "trainings",
+                "events",
+                "members",
+            ):
+                connection.execute(f"DELETE FROM {table}")
+            member_ids: dict[str, int] = {}
+            for member in members:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO members (member_code, name, party, queue_order)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (member["member_code"], member["name"], member["party"], member["queue_order"]),
+                )
+                member_ids[member["member_code"].casefold()] = int(cursor.lastrowid)
+            for duty in duties:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO events (
+                        duty_code, start_dt, end_dt, required_members, remarks,
+                        assignment_method, assignment_log, assigned_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        duty["duty_code"],
+                        duty["start_dt"],
+                        duty["end_dt"],
+                        duty["required_members"],
+                        duty["remarks"],
+                        duty["assignment_method"],
+                        duty["assignment_log"],
+                        duty["assigned_at"],
+                    ),
+                )
+                event_id = int(cursor.lastrowid)
+                for code in duty["applied"]:
+                    connection.execute(
+                        "INSERT INTO applications (event_id, member_id) VALUES (?, ?)",
+                        (event_id, member_ids[code.casefold()]),
+                    )
+                for index, assigned in enumerate(duty["assigned"], start=1):
+                    connection.execute(
+                        """
+                        INSERT INTO assignments (event_id, member_id, pick_index, hours)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (event_id, member_ids[assigned["member_code"].casefold()], index, assigned["hours"]),
+                    )
+            for training in trainings:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO trainings (training_code, start_dt, end_dt, remarks)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (training["training_code"], training["start_dt"], training["end_dt"], training["remarks"]),
+                )
+                training_id = int(cursor.lastrowid)
+                for attendee in training["attendees"]:
+                    connection.execute(
+                        """
+                        INSERT INTO training_attendance (training_id, member_id, hours)
+                        VALUES (?, ?, ?)
+                        """,
+                        (training_id, member_ids[attendee["member_code"].casefold()], attendee["hours"]),
+                    )
 
     def clear_all(self) -> None:
         with self.session() as connection:

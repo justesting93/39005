@@ -140,6 +140,7 @@ select, input {
 .panel-head p, .sample p { color: var(--muted); }
 
 .inline-form, .button-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 12px; }
+.inline-form .pair { display: flex; gap: 10px; align-items: end; }
 .inline-form label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
 
 .rules { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
@@ -155,13 +156,16 @@ select, input {
 }
 
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { position: sticky; top: 0; background: var(--head); font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { position: sticky; top: 0; background: var(--head); font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); vertical-align: bottom; }
 tr:last-child td { border-bottom: 0; }
 
 td input, td select {
   width: 100%;
   min-width: 0;
+}
+td input.remarks { min-width: 8rem; }
+td input, td select {
   border-color: transparent;
   background: transparent;
   padding: 4px 6px;

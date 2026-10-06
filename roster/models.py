@@ -34,6 +34,58 @@ def parse_dt(value: object, label: str) -> datetime:
     raise ValueError(f"{label} must be a date and time, for example 2026-10-06T09:00")
 
 
+def parse_remarks(value: object) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("Remarks must be text")
+    text = " ".join(value.split())
+    if len(text) > 500:
+        raise ValueError("Remarks must be 500 characters or fewer")
+    return text
+
+
+def credited_hours(stored: float | None, scheduled: float) -> float:
+    if stored is None:
+        return scheduled
+    if stored < 0:
+        return 0.0
+    if stored > scheduled:
+        return scheduled
+    return stored
+
+
+def parse_attend_hours(value: object, scheduled: float) -> float | None:
+    """Return hours to store. None means the member attended the full session."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError("Attend hours must be a number")
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise ValueError("Attend hours must be a number") from exc
+    if number < 0:
+        raise ValueError("Attend hours cannot be negative")
+    scheduled_text = f"{scheduled:.2f}".rstrip("0").rstrip(".")
+    if number > scheduled + 1e-6:
+        raise ValueError(f"Attend hours cannot be more than the scheduled {scheduled_text} hours")
+    if abs(number - scheduled) <= 1e-6:
+        return None
+    return round(number, 4)
+
+
+def parse_name(value: object) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("Name must be text")
+    text = " ".join(value.split())
+    if len(text) > 80:
+        raise ValueError("Name must be 80 characters or fewer")
+    return text
+
+
 def parse_code(value: object, label: str) -> str:
     if not isinstance(value, str) or not CODE_RE.fullmatch(value.strip()):
         raise ValueError(
@@ -88,15 +140,24 @@ class Member:
     plus assigned duty. It is not stored on its own.
     """
 
-    def __init__(self, id: int | None, member_id: str, party: str, queue_order: int):
+    def __init__(
+        self,
+        id: int | None,
+        member_id: str,
+        party: str,
+        queue_order: int,
+        name: str = "",
+    ):
         self.id = id
         self.member_id = member_id
+        self.name = name
         self.party = party
         self.queue_order = queue_order
         self.attend_hours: float | None = None
 
     def validate(self) -> None:
         self.member_id = parse_code(self.member_id, "Member ID")
+        self.name = parse_name(self.name)
         if self.party not in PARTIES:
             raise ValueError("Duty party must be DP1, DP2, or DP3")
         if isinstance(self.queue_order, bool) or not isinstance(self.queue_order, int):
@@ -108,6 +169,7 @@ class Member:
         payload = {
             "id": self.id,
             "member_id": self.member_id,
+            "name": self.name,
             "party": self.party,
             "queue_order": self.queue_order,
             "attend_hours": self.attend_hours,
@@ -132,6 +194,7 @@ class Event:
         assignment_method: str | None = None,
         assignment_log: dict | None = None,
         assigned_at: str | None = None,
+        remarks: str = "",
     ):
         self.id = id
         self.duty_code = duty_code
@@ -141,6 +204,7 @@ class Event:
         self.assignment_method = assignment_method
         self.assignment_log = assignment_log
         self.assigned_at = assigned_at
+        self.remarks = remarks
 
     @property
     def hours(self) -> float:
@@ -172,6 +236,7 @@ class Event:
             raise ValueError("Required number of members cannot exceed 500")
         if self.assignment_method not in (None, "standard", "assign"):
             raise ValueError("Assignment method must be standard or assign")
+        self.remarks = parse_remarks(self.remarks)
 
     def to_dict(self) -> dict:
         return {
@@ -181,6 +246,7 @@ class Event:
             "end_datetime": format_dt(self.end_datetime),
             "required_members": self.required_members,
             "hours": self.hours,
+            "remarks": self.remarks,
             "assignment_method": self.assignment_method,
             "assigned_at": self.assigned_at,
         }
@@ -195,11 +261,13 @@ class Training:
         training_code: str,
         start_datetime: datetime,
         end_datetime: datetime,
+        remarks: str = "",
     ):
         self.id = id
         self.training_code = training_code
         self.start_datetime = start_datetime
         self.end_datetime = end_datetime
+        self.remarks = remarks
 
     @property
     def hours(self) -> float:
@@ -211,6 +279,7 @@ class Training:
             raise ValueError("Training end must be after training start")
         if self.end_datetime - self.start_datetime > timedelta(days=14):
             raise ValueError("A training session cannot be longer than 14 days")
+        self.remarks = parse_remarks(self.remarks)
 
     def to_dict(self) -> dict:
         return {
@@ -219,4 +288,5 @@ class Training:
             "start_datetime": format_dt(self.start_datetime),
             "end_datetime": format_dt(self.end_datetime),
             "hours": self.hours,
+            "remarks": self.remarks,
         }

@@ -25,8 +25,13 @@ from roster.models import (
     FinancialYear,
     Member,
     Training,
+    credited_hours,
+    format_dt,
+    parse_attend_hours,
     parse_code,
     parse_dt,
+    parse_name,
+    parse_remarks,
 )
 
 
@@ -44,9 +49,15 @@ def list_members(db: Database, fy_year: int) -> dict:
 
 
 def create_member(db: Database, payload: dict, fy_year: int) -> dict:
-    member = Member(None, _required_text(payload, "member_id"), _party(payload), 1)
+    member = Member(
+        None,
+        _required_text(payload, "member_id"),
+        _party(payload),
+        1,
+        parse_name(payload.get("name", "")),
+    )
     member.validate()
-    new_id = db.insert_member(member.member_id, member.party)
+    new_id = db.insert_member(member.member_id, member.party, member.name)
     return _one_member(db, new_id, fy_year)
 
 
@@ -56,15 +67,49 @@ def update_member(db: Database, member_id: int, payload: dict, fy_year: int) -> 
     if current is None:
         raise NotFound("Member not found")
     code = current.member_id if "member_id" not in payload else parse_code(payload["member_id"], "Member ID")
+    name = current.name if "name" not in payload else parse_name(payload.get("name"))
     party = current.party if "party" not in payload else _party(payload)
     order = None
     if "queue_order" in payload:
         order = _whole_number(payload["queue_order"], "Queue order")
         if order < 1:
             raise ValueError("Queue order must be at least 1")
-    Member(current.id, code, party, order or current.queue_order).validate()
-    db.update_member(member_id, member_code=code, party=party, queue_order=order)
+    Member(current.id, code, party, order or current.queue_order, name).validate()
+    db.update_member(member_id, member_code=code, name=name, party=party, queue_order=order)
     return _one_member(db, member_id, fy_year)
+
+
+def import_members(db: Database, rows: object, fy_year: int) -> dict:
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Import needs at least one member")
+    prepared: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise ValueError(f"Row {index} is not a member")
+        raw_id = row.get("member_id", "")
+        code = parse_code(raw_id if isinstance(raw_id, str) else "", f"Member ID on row {index}")
+        key = code.casefold()
+        if key in seen:
+            raise ValueError(f"Member ID {code} is repeated in the file")
+        seen.add(key)
+        prepared.append((code, parse_name(row.get("name", ""))))
+    by_code = {member.member_id.casefold(): member for member in db.load().members}
+    created = 0
+    updated = 0
+    for code, name in prepared:
+        existing = by_code.get(code.casefold())
+        if existing is None:
+            db.insert_member(code, "DP1", name)
+            created += 1
+        else:
+            db.update_member(existing.id, name=name)
+            updated += 1
+    return {
+        "created": created,
+        "updated": updated,
+        "members": list_members(db, fy_year)["members"],
+    }
 
 
 def move_member(db: Database, member_id: int, direction: str, fy_year: int) -> dict:
@@ -86,7 +131,11 @@ def create_event(db: Database, payload: dict) -> dict:
     event = _event_from_payload(payload)
     event.validate()
     new_id = db.insert_event(
-        event.duty_code, event.start_datetime, event.end_datetime, event.required_members
+        event.duty_code,
+        event.start_datetime,
+        event.end_datetime,
+        event.required_members,
+        event.remarks,
     )
     snap = db.load()
     created = snap.event(new_id)
@@ -103,6 +152,7 @@ def update_event(db: Database, event_id: int, payload: dict) -> dict:
         "start_datetime": payload.get("start_datetime", current.start_datetime),
         "end_datetime": payload.get("end_datetime", current.end_datetime),
         "required_members": payload.get("required_members", current.required_members),
+        "remarks": payload.get("remarks", current.remarks),
     }
     event = _event_from_payload(merged, current)
     event.validate()
@@ -112,6 +162,7 @@ def update_event(db: Database, event_id: int, payload: dict) -> dict:
         start=event.start_datetime,
         end=event.end_datetime,
         required_members=event.required_members,
+        remarks=event.remarks,
     )
     snap = db.load()
     return _event_brief(snap.event(event_id), snap, _conflict_ids(snap))
@@ -157,6 +208,13 @@ def workspace(db: Database, event_id: int) -> dict:
                 "standard_rank": rank_row["standard_rank"],
                 "party_priority": rank_row["party_priority"],
                 "queue_position": rank_row["queue_position"],
+                "assigned": member.member_id in snap.assignments.get(event.id, []),
+                "duty_attend_hours": credited_hours(
+                    snap.assignment_hours.get(event.id, {}).get(member.member_id),
+                    event.hours,
+                )
+                if member.member_id in snap.assignments.get(event.id, [])
+                else None,
             }
         )
     return {
@@ -229,7 +287,9 @@ def list_trainings(db: Database) -> dict:
 def create_training(db: Database, payload: dict) -> dict:
     training = _training_from_payload(payload)
     training.validate()
-    new_id = db.insert_training(training.training_code, training.start_datetime, training.end_datetime)
+    new_id = db.insert_training(
+        training.training_code, training.start_datetime, training.end_datetime, training.remarks
+    )
     snap = db.load()
     return _training_payload(snap.training(new_id), snap)
 
@@ -243,6 +303,7 @@ def update_training(db: Database, training_id: int, payload: dict) -> dict:
         "training_code": payload.get("training_code", current.training_code),
         "start_datetime": payload.get("start_datetime", current.start_datetime),
         "end_datetime": payload.get("end_datetime", current.end_datetime),
+        "remarks": payload.get("remarks", current.remarks),
     }
     training = _training_from_payload(merged)
     training.validate()
@@ -251,6 +312,7 @@ def update_training(db: Database, training_id: int, payload: dict) -> dict:
         training_code=training.training_code,
         start=training.start_datetime,
         end=training.end_datetime,
+        remarks=training.remarks,
     )
     snap = db.load()
     return _training_payload(snap.training(training_id), snap)
@@ -269,6 +331,134 @@ def set_attendees(db: Database, training_id: int, member_codes: list[str]) -> di
     if training is None:
         raise NotFound("Training not found")
     return _training_payload(training, snap)
+
+
+def set_duty_attend_hours(db: Database, event_id: int, member_code: str, raw_hours: object) -> dict:
+    snap = db.load()
+    event = snap.event(event_id)
+    if event is None:
+        raise NotFound("Duty not found")
+    code = parse_code(member_code, "Member ID")
+    db.set_assignment_hours(event_id, code, parse_attend_hours(raw_hours, event.hours))
+    return workspace(db, event_id)
+
+
+def set_training_attend_hours(db: Database, training_id: int, member_code: str, raw_hours: object) -> dict:
+    snap = db.load()
+    training = snap.training(training_id)
+    if training is None:
+        raise NotFound("Training not found")
+    code = parse_code(member_code, "Member ID")
+    db.set_attendance_hours(training_id, code, parse_attend_hours(raw_hours, training.hours))
+    snap = db.load()
+    return _training_payload(snap.training(training_id), snap)
+
+
+def import_events(db: Database, rows: object) -> dict:
+    prepared = _import_rows(rows, "duty")
+    by_code = {event.duty_code.casefold(): event for event in db.load().events}
+    created = 0
+    updated = 0
+    for item in prepared:
+        existing = by_code.get(item.duty_code.casefold())
+        if existing is None:
+            db.insert_event(
+                item.duty_code, item.start_datetime, item.end_datetime, item.required_members, item.remarks
+            )
+            created += 1
+        else:
+            db.update_event(
+                existing.id,
+                duty_code=item.duty_code,
+                start=item.start_datetime,
+                end=item.end_datetime,
+                required_members=item.required_members,
+                remarks=item.remarks,
+            )
+            updated += 1
+    return {"created": created, "updated": updated, "events": list_events(db)["events"]}
+
+
+def import_trainings(db: Database, rows: object) -> dict:
+    prepared = _import_training_rows(rows)
+    by_code = {item.training_code.casefold(): item for item in db.load().trainings}
+    created = 0
+    updated = 0
+    for item in prepared:
+        existing = by_code.get(item.training_code.casefold())
+        if existing is None:
+            db.insert_training(item.training_code, item.start_datetime, item.end_datetime, item.remarks)
+            created += 1
+        else:
+            db.update_training(
+                existing.id,
+                training_code=item.training_code,
+                start=item.start_datetime,
+                end=item.end_datetime,
+                remarks=item.remarks,
+            )
+            updated += 1
+    return {"created": created, "updated": updated, "trainings": list_trainings(db)["trainings"]}
+
+
+def export_roster(db: Database) -> dict:
+    snap = db.load()
+    return {
+        "members": [
+            {
+                "member_id": member.member_id,
+                "name": member.name,
+                "party": member.party,
+                "queue_order": member.queue_order,
+            }
+            for member in snap.members
+        ],
+        "duties": [
+            {
+                "duty_code": event.duty_code,
+                "start_datetime": format_dt(event.start_datetime),
+                "end_datetime": format_dt(event.end_datetime),
+                "required_members": event.required_members,
+                "remarks": event.remarks,
+                "applied": sorted(snap.applications.get(event.id, ())),
+                "assigned": [
+                    {
+                        "member_id": member_id,
+                        "hours": snap.assignment_hours.get(event.id, {}).get(member_id),
+                    }
+                    for member_id in snap.assignments.get(event.id, [])
+                ],
+                "assignment_method": event.assignment_method,
+                "assignment_log": event.assignment_log,
+                "assigned_at": event.assigned_at,
+            }
+            for event in snap.events
+        ],
+        "trainings": [
+            {
+                "training_code": training.training_code,
+                "start_datetime": format_dt(training.start_datetime),
+                "end_datetime": format_dt(training.end_datetime),
+                "remarks": training.remarks,
+                "attendees": [
+                    {"member_id": member_id, "hours": stored}
+                    for member_id, stored in sorted(snap.attendance.get(training.id, {}).items())
+                ],
+            }
+            for training in snap.trainings
+        ],
+    }
+
+
+def import_roster(db: Database, payload: object) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("Saved roster must be an object")
+    members = _roster_members(payload.get("members", []))
+    known = {item["member_code"].casefold() for item in members}
+    duties = _roster_duties(payload.get("duties", []), known)
+    trainings = _roster_trainings(payload.get("trainings", []), known)
+    db.replace_roster(members, duties, trainings)
+    return export_roster(db)
 
 
 def selection_report(db: Database, event_id: int | None = None) -> dict:
@@ -377,31 +567,40 @@ def compute_totals(
         if not fy.contains(training.start_datetime):
             continue
         offered = round(offered + training.hours, 4)
-        detail = {
-            "training_code": training.training_code,
-            "hours": training.hours,
-            "start_datetime": training.start_datetime.strftime("%Y-%m-%dT%H:%M"),
-            "end_datetime": training.end_datetime.strftime("%Y-%m-%dT%H:%M"),
-        }
-        for member_id in snap.attendance.get(training.id, ()):
+        attended = snap.attendance.get(training.id, {})
+        for member_id, stored in attended.items():
             if member_id not in totals:
                 continue
+            attended_hours = credited_hours(stored, training.hours)
             totals[member_id].training_hours = round(
-                totals[member_id].training_hours + training.hours, 4
+                totals[member_id].training_hours + attended_hours, 4
             )
-            totals[member_id].trainings.append(detail)
+            totals[member_id].trainings.append(
+                {
+                    "training_code": training.training_code,
+                    "hours": training.hours,
+                    "attend_hours": attended_hours,
+                    "remarks": training.remarks,
+                    "start_datetime": training.start_datetime.strftime("%Y-%m-%dT%H:%M"),
+                    "end_datetime": training.end_datetime.strftime("%Y-%m-%dT%H:%M"),
+                }
+            )
     for event in snap.events:
         if event.id == exclude_event_id or not fy.contains(event.start_datetime):
             continue
+        stored_hours = snap.assignment_hours.get(event.id, {})
         for member_id in snap.assignments.get(event.id, ()):
             if member_id not in totals:
                 continue
-            totals[member_id].duty_hours = round(totals[member_id].duty_hours + event.hours, 4)
+            attended_hours = credited_hours(stored_hours.get(member_id), event.hours)
+            totals[member_id].duty_hours = round(totals[member_id].duty_hours + attended_hours, 4)
             totals[member_id].duty_count += 1
             totals[member_id].duties.append(
                 {
                     "duty_code": event.duty_code,
                     "hours": event.hours,
+                    "attend_hours": attended_hours,
+                    "remarks": event.remarks,
                     "start_datetime": event.start_datetime.strftime("%Y-%m-%dT%H:%M"),
                     "end_datetime": event.end_datetime.strftime("%Y-%m-%dT%H:%M"),
                 }
@@ -482,6 +681,7 @@ def _member_payload(member: Member, total: MemberTotals) -> dict:
     return {
         "id": member.id,
         "member_id": member.member_id,
+        "name": member.name,
         "party": member.party,
         "queue_order": member.queue_order,
         "attend_hours": stats.attend_hours,
@@ -513,7 +713,12 @@ def _event_brief(event: Event, snap: Snapshot, conflicts: set[int]) -> dict:
 
 def _training_payload(training: Training, snap: Snapshot) -> dict:
     payload = training.to_dict()
-    payload["attendee_ids"] = sorted(snap.attendance.get(training.id, set()))
+    attended = snap.attendance.get(training.id, {})
+    payload["attendee_ids"] = sorted(attended)
+    payload["attendees"] = [
+        {"member_id": member_id, "hours": credited_hours(stored, training.hours)}
+        for member_id, stored in sorted(attended.items())
+    ]
     return payload
 
 
@@ -543,6 +748,7 @@ def _event_from_payload(payload: dict, existing: Event | None = None) -> Event:
         existing.assignment_method if existing else None,
         existing.assignment_log if existing else None,
         existing.assigned_at if existing else None,
+        parse_remarks(payload.get("remarks", existing.remarks if existing else "")),
     )
 
 
@@ -552,6 +758,7 @@ def _training_from_payload(payload: dict) -> Training:
         parse_code(_required(payload, "training_code"), "Training code"),
         parse_dt(_required(payload, "start_datetime"), "Training start"),
         parse_dt(_required(payload, "end_datetime"), "Training end"),
+        parse_remarks(payload.get("remarks", "")),
     )
 
 
@@ -573,6 +780,182 @@ def _required_text(payload: dict, key: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{key} is required")
     return value
+
+
+def _import_rows(rows: object, kind: str) -> list[Event]:
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Import needs at least one duty" if kind == "duty" else "Import needs at least one training")
+    prepared: list[Event] = []
+    seen: set[str] = set()
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise ValueError(f"Row {index} is not a duty")
+        required = row.get("required_members")
+        if isinstance(required, str) and required.strip().isdigit():
+            required = int(required.strip())
+        event = Event(
+            None,
+            parse_code(row.get("duty_code") if isinstance(row.get("duty_code"), str) else "", f"Duty code on row {index}"),
+            parse_dt(row.get("start_datetime"), f"Duty start on row {index}"),
+            parse_dt(row.get("end_datetime"), f"Duty end on row {index}"),
+            _whole_number(required, f"Required members on row {index}"),
+            remarks=parse_remarks(row.get("remarks", "")),
+        )
+        event.validate()
+        key = event.duty_code.casefold()
+        if key in seen:
+            raise ValueError(f"Duty code {event.duty_code} is repeated in the file")
+        seen.add(key)
+        prepared.append(event)
+    return prepared
+
+
+def _import_training_rows(rows: object) -> list[Training]:
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Import needs at least one training")
+    prepared: list[Training] = []
+    seen: set[str] = set()
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise ValueError(f"Row {index} is not a training")
+        training = Training(
+            None,
+            parse_code(
+                row.get("training_code") if isinstance(row.get("training_code"), str) else "",
+                f"Training code on row {index}",
+            ),
+            parse_dt(row.get("start_datetime"), f"Training start on row {index}"),
+            parse_dt(row.get("end_datetime"), f"Training end on row {index}"),
+            parse_remarks(row.get("remarks", "")),
+        )
+        training.validate()
+        key = training.training_code.casefold()
+        if key in seen:
+            raise ValueError(f"Training code {training.training_code} is repeated in the file")
+        seen.add(key)
+        prepared.append(training)
+    return prepared
+
+
+def _roster_members(rows: object) -> list[dict]:
+    if not isinstance(rows, list):
+        raise ValueError("Saved roster members must be a list")
+    prepared = []
+    seen: set[str] = set()
+    next_order = {"DP1": 1, "DP2": 1, "DP3": 1}
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise ValueError(f"Member {index} is not an object")
+        code = parse_code(row.get("member_id") if isinstance(row.get("member_id"), str) else "", f"Member ID {index}")
+        party = row.get("party")
+        if party not in PARTIES:
+            raise ValueError("Duty party must be DP1, DP2, or DP3")
+        key = code.casefold()
+        if key in seen:
+            raise ValueError(f"Member ID {code} is repeated in the file")
+        seen.add(key)
+        order = row.get("queue_order", next_order[party])
+        if isinstance(order, bool) or not isinstance(order, int) or order < 1:
+            raise ValueError(f"Queue order for {code} must be a whole number of at least 1")
+        next_order[party] = max(next_order[party], order + 1)
+        member = Member(None, code, party, order, parse_name(row.get("name", "")))
+        member.validate()
+        prepared.append(
+            {"member_code": member.member_id, "name": member.name, "party": member.party, "queue_order": order}
+        )
+    return prepared
+
+
+def _roster_people(value: object, known: set[str], label: str) -> list[dict]:
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be a list")
+    people = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, str):
+            code = parse_code(item, "Member ID")
+            hours = None
+        elif isinstance(item, dict):
+            raw = item.get("member_id", "")
+            code = parse_code(raw if isinstance(raw, str) else "", "Member ID")
+            hours = item.get("hours")
+        else:
+            raise ValueError(f"{label} has a member that is not an object")
+        if code.casefold() not in known:
+            raise ValueError(f"Member {code} is not in the saved roster")
+        if code.casefold() in seen:
+            raise ValueError(f"Member {code} is repeated in {label}")
+        seen.add(code.casefold())
+        people.append({"member_code": code, "hours": hours})
+    return people
+
+
+def _roster_duties(rows: object, known: set[str]) -> list[dict]:
+    if not isinstance(rows, list):
+        raise ValueError("Saved duties must be a list")
+    prepared = []
+    seen: set[str] = set()
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise ValueError(f"Duty {index} is not an object")
+        event = _import_rows([row], "duty")[0]
+        key = event.duty_code.casefold()
+        if key in seen:
+            raise ValueError(f"Duty code {event.duty_code} is repeated in the file")
+        seen.add(key)
+        applied = _roster_people(row.get("applied", []), known, f"Applied list for {event.duty_code}")
+        assigned = _roster_people(row.get("assigned", []), known, f"Assigned list for {event.duty_code}")
+        for person in assigned:
+            person["hours"] = parse_attend_hours(person["hours"], event.hours)
+        method = row.get("assignment_method")
+        if method not in (None, "standard", "assign"):
+            raise ValueError("Assignment method must be standard or assign")
+        log = row.get("assignment_log")
+        if log is not None and not isinstance(log, dict):
+            raise ValueError(f"Assignment record for {event.duty_code} must be an object")
+        prepared.append(
+            {
+                "duty_code": event.duty_code,
+                "start_dt": format_dt(event.start_datetime),
+                "end_dt": format_dt(event.end_datetime),
+                "required_members": event.required_members,
+                "remarks": event.remarks,
+                "applied": [person["member_code"] for person in applied],
+                "assigned": assigned,
+                "assignment_method": method,
+                "assignment_log": None if log is None else json.dumps(log),
+                "assigned_at": row.get("assigned_at") if isinstance(row.get("assigned_at"), str) else None,
+            }
+        )
+    return prepared
+
+
+def _roster_trainings(rows: object, known: set[str]) -> list[dict]:
+    if not isinstance(rows, list):
+        raise ValueError("Saved training must be a list")
+    prepared = []
+    seen: set[str] = set()
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise ValueError(f"Training {index} is not an object")
+        training = _import_training_rows([row])[0]
+        key = training.training_code.casefold()
+        if key in seen:
+            raise ValueError(f"Training code {training.training_code} is repeated in the file")
+        seen.add(key)
+        attendees = _roster_people(row.get("attendees", []), known, f"Attendance for {training.training_code}")
+        for person in attendees:
+            person["hours"] = parse_attend_hours(person["hours"], training.hours)
+        prepared.append(
+            {
+                "training_code": training.training_code,
+                "start_dt": format_dt(training.start_datetime),
+                "end_dt": format_dt(training.end_datetime),
+                "remarks": training.remarks,
+                "attendees": attendees,
+            }
+        )
+    return prepared
 
 
 def _whole_number(value, label: str) -> int:

@@ -16,6 +16,9 @@
       <label class="fy-control" id="fy-control">Financial year
         <select id="fy-select"></select>
       </label>
+      <button type="button" id="save-roster" class="secondary">Save</button>
+      <button type="button" id="open-roster" class="secondary">Open</button>
+      <input id="roster-file" type="file" accept=".json,application/json" hidden>
       <button type="button" id="restore" class="secondary">Restore sample</button>
     </div>
     <nav aria-label="Sections">
@@ -38,6 +41,7 @@
       </div>
       <form id="member-form" class="inline-form">
         <label>Member ID <input name="member_id" required maxlength="32" autocomplete="off"></label>
+        <label>Name <input name="name" maxlength="80" autocomplete="off"></label>
         <label>Duty party
           <select name="party">
             <option>DP1</option>
@@ -46,12 +50,18 @@
           </select>
         </label>
         <button type="submit">Add member</button>
+        <span class="pair">
+          <button type="button" id="export-members" class="secondary">Export</button>
+          <button type="button" id="import-members" class="secondary" title="CSV with Member ID and Name. A new ID is added to DP1.">Import</button>
+        </span>
+        <input id="member-import" type="file" accept=".csv,text/csv" hidden>
       </form>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>Member ID</th>
+              <th>Name</th>
               <th>Duty party</th>
               <th>Queue</th>
               <th>Attends hours</th>
@@ -70,14 +80,20 @@
     <section data-panel="events" hidden>
       <div class="panel-head">
         <h2>Events</h2>
-        <p>A duty has a code, a start, an end, and the number of members required. Hours are the time between start and end.</p>
+        <p>A duty has a code, a start, an end, and the number of members required. Hours are the time between start and end. An assigned member who is late or leaves early can have fewer attend hours than that.</p>
       </div>
       <form id="event-form" class="inline-form">
         <label>Duty code <input name="duty_code" required maxlength="32" autocomplete="off"></label>
         <label>Duty start <input name="start_datetime" type="datetime-local" required></label>
         <label>Duty end <input name="end_datetime" type="datetime-local" required></label>
         <label>Required members <input name="required_members" type="number" min="1" max="500" value="1" required></label>
+        <label>Remarks <input name="remarks" maxlength="500" autocomplete="off"></label>
         <button type="submit">Add event</button>
+        <span class="pair">
+          <button type="button" id="export-events" class="secondary">Export</button>
+          <button type="button" id="import-events" class="secondary" title="CSV with Duty code, Duty start, Duty end, Required members, and Remarks.">Import</button>
+        </span>
+        <input id="event-import" type="file" accept=".csv,text/csv" hidden>
       </form>
       <div class="table-wrap">
         <table>
@@ -88,6 +104,7 @@
               <th>Duty end</th>
               <th>Hours</th>
               <th>Required members</th>
+              <th>Remarks</th>
               <th>Applied</th>
               <th>Assigned</th>
               <th></th>
@@ -101,13 +118,19 @@
     <section data-panel="training" hidden>
       <div class="panel-head">
         <h2>Training</h2>
-        <p>Training hours count toward the 60-hour year and toward the rule of attending at least 30% of the training hours offered. Tick the members who attended.</p>
+        <p>Training hours count toward the 60-hour year and toward the rule of attending at least 30% of the training hours offered. Tick the members who attended. Attend hours start as the session length, and can be lower when a member is late or leaves early.</p>
       </div>
       <form id="training-form" class="inline-form">
         <label>Training code <input name="training_code" required maxlength="32" autocomplete="off"></label>
         <label>Start <input name="start_datetime" type="datetime-local" required></label>
         <label>End <input name="end_datetime" type="datetime-local" required></label>
+        <label>Remarks <input name="remarks" maxlength="500" autocomplete="off"></label>
         <button type="submit">Add training</button>
+        <span class="pair">
+          <button type="button" id="export-training" class="secondary">Export</button>
+          <button type="button" id="import-training" class="secondary" title="CSV with Training code, Start, End, and Remarks.">Import</button>
+        </span>
+        <input id="training-import" type="file" accept=".csv,text/csv" hidden>
       </form>
       <div class="table-wrap">
         <table>
@@ -117,6 +140,7 @@
               <th>Start</th>
               <th>End</th>
               <th>Hours</th>
+              <th>Remarks</th>
               <th>Attended</th>
               <th></th>
             </tr>
@@ -178,9 +202,9 @@
             <input id="session-member" type="search" autocomplete="off" placeholder="All members">
           </label>
         </div>
-        <div class="no-print button-row subtabs" role="tablist" aria-label="Session kind">
+        <div class="no-print button-row subtabs" role="group" aria-label="Session kind">
           <button type="button" id="sessions-training" class="is-on" aria-pressed="true">Training</button>
-          <button type="button" id="sessions-duties" aria-pressed="false">Duties</button>
+          <button type="button" id="sessions-duties" class="is-on" aria-pressed="true">Duties</button>
         </div>
         <div class="no-print button-row">
           <button type="button" id="print-sessions" class="secondary">Print</button>

@@ -18,7 +18,12 @@ from roster.service import (
     delete_event,
     delete_member,
     delete_training,
+    export_roster,
     hours_report,
+    import_events,
+    import_members,
+    import_roster,
+    import_trainings,
     list_events,
     list_members,
     list_trainings,
@@ -29,6 +34,8 @@ from roster.service import (
     selection_report,
     set_applications,
     set_attendees,
+    set_duty_attend_hours,
+    set_training_attend_hours,
     update_event,
     update_member,
     update_training,
@@ -79,6 +86,10 @@ def create_app(db_path: str = DEFAULT_DB, seed: bool = False) -> Flask:
     def post_member():
         return jsonify(create_member(database, _body(), _fy_arg())), 201
 
+    @app.post("/api/members/import")
+    def post_member_import():
+        return jsonify(import_members(database, _body().get("rows"), _fy_arg()))
+
     @app.put("/api/members/<int:member_id>")
     def put_member(member_id: int):
         return jsonify(update_member(database, member_id, _body(), _fy_arg()))
@@ -101,6 +112,10 @@ def create_app(db_path: str = DEFAULT_DB, seed: bool = False) -> Flask:
     def post_event():
         return jsonify(create_event(database, _body())), 201
 
+    @app.post("/api/events/import")
+    def post_event_import():
+        return jsonify(import_events(database, _body().get("rows")))
+
     @app.put("/api/events/<int:event_id>")
     def put_event(event_id: int):
         return jsonify(update_event(database, event_id, _body()))
@@ -117,6 +132,11 @@ def create_app(db_path: str = DEFAULT_DB, seed: bool = False) -> Flask:
     @app.put("/api/events/<int:event_id>/applications")
     def put_applications(event_id: int):
         return jsonify(set_applications(database, event_id, _body().get("member_ids", [])))
+
+    @app.put("/api/events/<int:event_id>/hours")
+    def put_event_hours(event_id: int):
+        body = _body()
+        return jsonify(set_duty_attend_hours(database, event_id, body.get("member_id", ""), body.get("hours")))
 
     @app.post("/api/events/<int:event_id>/assignment")
     def post_assignment(event_id: int):
@@ -138,6 +158,10 @@ def create_app(db_path: str = DEFAULT_DB, seed: bool = False) -> Flask:
     def post_training():
         return jsonify(create_training(database, _body())), 201
 
+    @app.post("/api/trainings/import")
+    def post_training_import():
+        return jsonify(import_trainings(database, _body().get("rows")))
+
     @app.put("/api/trainings/<int:training_id>")
     def put_training(training_id: int):
         return jsonify(update_training(database, training_id, _body()))
@@ -150,6 +174,13 @@ def create_app(db_path: str = DEFAULT_DB, seed: bool = False) -> Flask:
     @app.put("/api/trainings/<int:training_id>/attendees")
     def put_attendees(training_id: int):
         return jsonify(set_attendees(database, training_id, _body().get("member_ids", [])))
+
+    @app.put("/api/trainings/<int:training_id>/hours")
+    def put_training_hours(training_id: int):
+        body = _body()
+        return jsonify(
+            set_training_attend_hours(database, training_id, body.get("member_id", ""), body.get("hours"))
+        )
 
     @app.get("/api/reports/selection")
     def get_selection_report():
@@ -165,6 +196,14 @@ def create_app(db_path: str = DEFAULT_DB, seed: bool = False) -> Flask:
     def post_restore():
         restore_demo(database)
         return jsonify(ok=True)
+
+    @app.get("/api/roster")
+    def get_roster():
+        return jsonify(export_roster(database))
+
+    @app.post("/api/roster")
+    def post_roster():
+        return jsonify(import_roster(database, _body()))
 
     @app.errorhandler(ValueError)
     def bad_request(error):

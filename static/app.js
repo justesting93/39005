@@ -4,7 +4,7 @@ const state = {
   meta: null,
   eventId: null,
   trainingId: null,
-  sessionView: "training",
+  sessionShow: { training: true, duties: true },
   selectionReport: null,
   hoursReport: null,
   sessionsReport: null,
@@ -89,20 +89,32 @@ async function init() {
     await refresh();
   });
   $("restore").addEventListener("click", restoreSample);
+  $("save-roster").addEventListener("click", saveRoster);
+  $("open-roster").addEventListener("click", () => $("roster-file").click());
+  $("roster-file").addEventListener("change", openRosterFile);
   $("print-selection").addEventListener("click", () => window.print());
   $("print-hours").addEventListener("click", () => window.print());
   $("print-sessions").addEventListener("click", () => window.print());
   $("csv-selection").addEventListener("click", downloadSelectionCsv);
   $("csv-hours").addEventListener("click", downloadHoursCsv);
   $("csv-sessions").addEventListener("click", downloadSessionsCsv);
-  $("sessions-training").addEventListener("click", () => setSessionView("training"));
-  $("sessions-duties").addEventListener("click", () => setSessionView("duties"));
+  $("sessions-training").addEventListener("click", () => toggleSessionKind("training"));
+  $("sessions-duties").addEventListener("click", () => toggleSessionKind("duties"));
   $("session-member").addEventListener("input", () => {
     if (state.sessionsReport) paintSessions(state.sessionsReport);
   });
   $("member-form").addEventListener("submit", addMember);
   $("event-form").addEventListener("submit", addEvent);
   $("training-form").addEventListener("submit", addTraining);
+  $("export-members").addEventListener("click", exportMembers);
+  $("import-members").addEventListener("click", () => $("member-import").click());
+  $("member-import").addEventListener("change", importMembersFile);
+  $("export-events").addEventListener("click", exportEvents);
+  $("import-events").addEventListener("click", () => $("event-import").click());
+  $("event-import").addEventListener("change", importEventsFile);
+  $("export-training").addEventListener("click", exportTraining);
+  $("import-training").addEventListener("click", () => $("training-import").click());
+  $("training-import").addEventListener("change", importTrainingFile);
   banner("");
   await showTab("members");
 }
@@ -140,7 +152,7 @@ async function renderMembers() {
   const body = $("member-rows");
   body.replaceChildren();
   if (!data.members.length) {
-    body.append(h("tr", {}, h("td", { colspan: "9", text: "No members yet." })));
+    body.append(h("tr", {}, h("td", { colspan: "10", text: "No members yet." })));
     return;
   }
   for (const member of data.members) {
@@ -150,6 +162,14 @@ async function renderMembers() {
       maxlength: "32",
       onChange: async (event) => {
         await saveMember(member.id, { member_id: event.target.value.trim() });
+      },
+    });
+    const nameInput = h("input", {
+      value: member.name || "",
+      "aria-label": `Name for ${member.member_id}`,
+      maxlength: "80",
+      onChange: async (event) => {
+        await saveMember(member.id, { name: event.target.value });
       },
     });
     const orderInput = h("input", {
@@ -170,6 +190,7 @@ async function renderMembers() {
     body.append(
       h("tr", {}, [
         h("td", {}, idInput),
+        h("td", {}, nameInput),
         h("td", {}, partySelect(member.party, (event) => saveMember(member.id, { party: event.target.value }))),
         h("td", {}, orderInput),
         h("td", { text: fmtHours(member.attend_hours) }),
@@ -221,13 +242,207 @@ async function removeMember(member) {
   }
 }
 
+async function exportMembers() {
+  try {
+    const data = await api(`/api/members?fy=${state.fy}`);
+    const rows = [["Member ID", "Name"]];
+    for (const member of data.members) rows.push([member.member_id, member.name || ""]);
+    download("members.csv", rows);
+  } catch (error) {
+    banner(error.message, "error");
+  }
+}
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let quoted = false;
+  const source = text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (quoted) {
+      if (char === '"') {
+        if (source[index + 1] === '"') {
+          cell += '"';
+          index += 1;
+        } else {
+          quoted = false;
+        }
+      } else {
+        cell += char;
+      }
+    } else if (char === '"') {
+      quoted = true;
+    } else if (char === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (char === "\n") {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += char;
+    }
+  }
+  if (cell.length || row.length) {
+    row.push(cell);
+    rows.push(row);
+  }
+  return rows.filter((item) => item.some((value) => value.trim()));
+}
+
+function parseMemberCsv(text) {
+  const table = parseCsv(text);
+  if (!table.length) throw new Error("The file is empty.");
+  const header = table[0].map((value) => value.trim().toLowerCase());
+  const idIndex = header.findIndex((value) => value === "member id" || value === "member_id");
+  const nameIndex = header.findIndex((value) => value === "name");
+  if (idIndex < 0 || nameIndex < 0) throw new Error("CSV needs Member ID and Name columns.");
+  const members = [];
+  for (const row of table.slice(1)) {
+    members.push({
+      member_id: (row[idIndex] || "").trim(),
+      name: row[nameIndex] || "",
+    });
+  }
+  if (!members.length) throw new Error("The file has no members.");
+  return members;
+}
+
+async function importMembersFile(event) {
+  const input = event.target;
+  const file = input.files && input.files[0];
+  input.value = "";
+  if (!file) return;
+  try {
+    const rows = parseMemberCsv(await file.text());
+    const result = await api(`/api/members/import?fy=${state.fy}`, {
+      method: "POST",
+      body: JSON.stringify({ rows }),
+    });
+    const added = result.created ? `Added ${result.created} to DP1. ` : "";
+    const changed = result.updated ? `Updated ${result.updated} names.` : "";
+    banner(`${added}${changed}`.trim(), "ok");
+    await renderMembers();
+  } catch (error) {
+    banner(error.message, "error");
+  }
+}
+
+async function exportEvents() {
+  try {
+    const data = await api("/api/events");
+    const rows = [["Duty code", "Duty start", "Duty end", "Required members", "Remarks"]];
+    for (const item of data.events) {
+      rows.push([item.duty_code, item.start_datetime, item.end_datetime, item.required_members, item.remarks || ""]);
+    }
+    download("duties.csv", rows);
+  } catch (error) {
+    banner(error.message, "error");
+  }
+}
+
+async function importEventsFile(event) {
+  await importCsvFile(event, "duty", "/api/events/import", renderEvents);
+}
+
+async function exportTraining() {
+  try {
+    const data = await api("/api/trainings");
+    const rows = [["Training code", "Start", "End", "Remarks"]];
+    for (const item of data.trainings) {
+      rows.push([item.training_code, item.start_datetime, item.end_datetime, item.remarks || ""]);
+    }
+    download("training.csv", rows);
+  } catch (error) {
+    banner(error.message, "error");
+  }
+}
+
+async function importTrainingFile(event) {
+  await importCsvFile(event, "training", "/api/trainings/import", renderTraining);
+}
+
+async function importCsvFile(event, kind, url, render) {
+  const input = event.target;
+  const file = input.files && input.files[0];
+  input.value = "";
+  if (!file) return;
+  try {
+    const rows = kind === "duty" ? parseDutyCsv(await file.text()) : parseTrainingCsv(await file.text());
+    const result = await api(url, { method: "POST", body: JSON.stringify({ rows }) });
+    const noun = (count) => {
+      if (kind === "duty") return count === 1 ? "duty" : "duties";
+      return count === 1 ? "training session" : "training sessions";
+    };
+    const added = result.created ? `Added ${result.created} ${noun(result.created)}. ` : "";
+    const changed = result.updated ? `Updated ${result.updated} ${noun(result.updated)}.` : "";
+    banner(`${added}${changed}`.trim(), "ok");
+    await render();
+  } catch (error) {
+    banner(error.message, "error");
+  }
+}
+
+function rowsFromCsv(text, columns) {
+  const table = parseCsv(text);
+  if (!table.length) throw new Error("The file is empty.");
+  const header = table[0].map((value) => value.trim().toLowerCase());
+  const indexes = columns.map((names) => header.findIndex((value) => names.includes(value)));
+  if (indexes.some((index) => index < 0)) {
+    throw new Error(`CSV needs ${columns.map((names) => names[0]).join(", ")} columns.`);
+  }
+  const records = [];
+  for (const row of table.slice(1)) {
+    records.push(indexes.map((index) => row[index] || ""));
+  }
+  if (!records.length) throw new Error("The file has no rows.");
+  return records;
+}
+
+function parseDutyCsv(text) {
+  return rowsFromCsv(text, [
+    ["duty code", "duty_code"],
+    ["duty start", "start", "start_datetime"],
+    ["duty end", "end", "end_datetime"],
+    ["required members", "required_members"],
+    ["remarks"],
+  ]).map(([duty_code, start_datetime, end_datetime, required_members, remarks]) => ({
+    duty_code: duty_code.trim(),
+    start_datetime: start_datetime.trim(),
+    end_datetime: end_datetime.trim(),
+    required_members: Number(required_members),
+    remarks,
+  }));
+}
+
+function parseTrainingCsv(text) {
+  return rowsFromCsv(text, [
+    ["training code", "training_code"],
+    ["start", "start_datetime"],
+    ["end", "end_datetime"],
+    ["remarks"],
+  ]).map(([training_code, start_datetime, end_datetime, remarks]) => ({
+    training_code: training_code.trim(),
+    start_datetime: start_datetime.trim(),
+    end_datetime: end_datetime.trim(),
+    remarks,
+  }));
+}
+
 async function addMember(event) {
   event.preventDefault();
   const form = new FormData(event.target);
   try {
     await api(`/api/members?fy=${state.fy}`, {
       method: "POST",
-      body: JSON.stringify({ member_id: form.get("member_id"), party: form.get("party") }),
+      body: JSON.stringify({
+        member_id: form.get("member_id"),
+        name: form.get("name"),
+        party: form.get("party"),
+      }),
     });
     event.target.reset();
     banner("Member added.", "ok");
@@ -242,7 +457,7 @@ async function renderEvents() {
   const body = $("event-rows");
   body.replaceChildren();
   if (!data.events.length) {
-    body.append(h("tr", {}, h("td", { colspan: "8", text: "No duties yet." })));
+    body.append(h("tr", {}, h("td", { colspan: "9", text: "No duties yet." })));
     return;
   }
   for (const item of data.events) {
@@ -279,6 +494,13 @@ async function renderEvents() {
           }
           saveEvent(item, { required_members: required });
         },
+      })),
+      h("td", {}, h("input", {
+        class: "remarks",
+        value: item.remarks || "",
+        maxlength: "500",
+        "aria-label": `Remarks for ${item.duty_code}`,
+        onChange: (event) => saveEvent(item, { remarks: event.target.value }),
       })),
       h("td", { text: String(item.applicant_count) }),
       h("td", {}, [
@@ -335,6 +557,7 @@ async function addEvent(event) {
         start_datetime: form.get("start_datetime"),
         end_datetime: form.get("end_datetime"),
         required_members: required,
+        remarks: form.get("remarks"),
       }),
     });
     event.target.reset();
@@ -353,7 +576,7 @@ async function renderTraining() {
   const body = $("training-rows");
   body.replaceChildren();
   if (!trainingData.trainings.length) {
-    body.append(h("tr", {}, h("td", { colspan: "6", text: "No training sessions yet." })));
+    body.append(h("tr", {}, h("td", { colspan: "7", text: "No training sessions yet." })));
     $("attendance-panel").replaceChildren();
     return;
   }
@@ -380,6 +603,13 @@ async function renderTraining() {
         onChange: (event) => saveTraining(item, { end_datetime: event.target.value }),
       })),
       h("td", { text: fmtHours(item.hours) }),
+      h("td", {}, h("input", {
+        class: "remarks",
+        value: item.remarks || "",
+        maxlength: "500",
+        "aria-label": `Remarks for ${item.training_code}`,
+        onChange: (event) => saveTraining(item, { remarks: event.target.value }),
+      })),
       h("td", { text: String(item.attendee_ids.length) }),
       h("td", {}, h("div", { class: "actions" }, [
         h("button", {
@@ -405,32 +635,61 @@ function paintAttendance(training, members) {
     panel.replaceChildren();
     return;
   }
-  const attended = new Set(training.attendee_ids);
+  const attended = new Map((training.attendees || []).map((item) => [item.member_id, item.hours]));
   const grid = h("div", { class: "table-wrap" }, h("table", {}, [
     h("thead", {}, h("tr", {}, [
       h("th", { text: "Attended" }),
       h("th", { text: "Member ID" }),
       h("th", { text: "Duty party" }),
+      h("th", { text: "Attend hours" }),
     ])),
-    h("tbody", {}, members.map((member) => h("tr", {}, [
-      h("td", {}, h("input", {
-        type: "checkbox",
-        checked: attended.has(member.member_id),
-        "aria-label": `${member.member_id} attended ${training.training_code}`,
-        onChange: (event) => setAttendance(training, member.member_id, event.target.checked),
-      })),
-      h("td", { text: member.member_id }),
-      h("td", { text: member.party }),
-    ]))),
+    h("tbody", {}, members.map((member) => {
+      const present = attended.has(member.member_id);
+      return h("tr", {}, [
+        h("td", {}, h("input", {
+          type: "checkbox",
+          checked: present,
+          "aria-label": `${member.member_id} attended ${training.training_code}`,
+          onChange: (event) => setAttendance(training, member.member_id, event.target.checked),
+        })),
+        h("td", { text: member.member_id }),
+        h("td", { text: member.party }),
+        h("td", {}, h("input", {
+          type: "number",
+          min: "0",
+          max: String(training.hours),
+          step: "0.25",
+          value: present ? String(attended.get(member.member_id)) : "",
+          disabled: !present,
+          "aria-label": `Attend hours for ${member.member_id} at ${training.training_code}`,
+          onChange: (event) => saveTrainingHours(training, member.member_id, event.target.value),
+        })),
+      ]);
+    })),
   ]));
   panel.replaceChildren(
     h("h3", { text: `Attendance for ${training.training_code}` }),
+    h("p", { class: "muted", text: `Scheduled length is ${fmtHours(training.hours)} hours. Lower attend hours when a member is late or leaves early.` }),
     h("div", { class: "button-row no-print" }, [
       h("button", { type: "button", class: "secondary", text: "Mark all", onClick: () => setAttendanceList(training, members.map((member) => member.member_id)) }),
       h("button", { type: "button", class: "secondary", text: "Clear all", onClick: () => setAttendanceList(training, []) }),
     ]),
     grid,
   );
+}
+
+async function saveTrainingHours(training, memberId, value) {
+  try {
+    await api(`/api/trainings/${training.id}/hours`, {
+      method: "PUT",
+      body: JSON.stringify({ member_id: memberId, hours: value === "" ? null : Number(value) }),
+    });
+    banner("");
+    await renderTraining();
+  } catch (error) {
+    banner(error.message, "error");
+    await renderTraining();
+  }
 }
 
 async function setAttendance(training, memberId, on) {
@@ -486,6 +745,7 @@ async function addTraining(event) {
         training_code: form.get("training_code"),
         start_datetime: form.get("start_datetime"),
         end_datetime: form.get("end_datetime"),
+        remarks: form.get("remarks"),
       }),
     });
     state.trainingId = created.id;
@@ -539,7 +799,7 @@ function paintAssign(events, workspace) {
   const assignPicks = new Set(workspace.previews.assign.selected);
   const table = h("table", {}, [
     h("thead", {}, h("tr", {}, [
-      "Applied", "Member ID", "Duty party", "Attends hours", "Training", "Duties", "Standard rank", "Standard", "Assign",
+      "Applied", "Member ID", "Duty party", "Attends hours", "Training", "Duties", "This duty", "Standard rank", "Standard", "Assign",
     ].map((label) => h("th", { text: label })))),
     h("tbody", {}, workspace.members.map((member) => {
       const classes = [
@@ -558,6 +818,15 @@ function paintAssign(events, workspace) {
         h("td", { text: fmtHours(member.attend_hours) }),
         h("td", { text: `${fmtHours(member.training_hours)} / ${fmtHours(member.training_offered)}` }),
         h("td", { text: String(member.duty_count) }),
+        h("td", {}, member.assigned ? h("input", {
+          type: "number",
+          min: "0",
+          max: String(workspace.event.hours),
+          step: "0.25",
+          value: String(member.duty_attend_hours),
+          "aria-label": `Attend hours for ${member.member_id} on ${workspace.event.duty_code}`,
+          onChange: (event) => saveDutyHours(workspace, member.member_id, event.target.value),
+        }) : h("span", { class: "muted", text: "—" })),
         h("td", { text: String(member.standard_rank) }),
         h("td", { text: standardMap.get(member.member_id)?.outcome || "" }),
         h("td", { text: assignMap.get(member.member_id)?.outcome || "" }),
@@ -581,13 +850,8 @@ function paintAssign(events, workspace) {
   pieces.push(h("div", { class: "button-row" }, [
     h("button", { type: "button", class: "secondary", text: "Mark all applied", onClick: () => setAppliedList(workspace, workspace.members.map((member) => member.member_id)) }),
     h("button", { type: "button", class: "secondary", text: "Clear applied", onClick: () => setAppliedList(workspace, []) }),
-    ...["DP1", "DP2", "DP3"].map((party) => h("button", {
-      type: "button",
-      class: "secondary",
-      text: `${party} on`,
-      onClick: () => setPartyApplied(workspace, party, true),
-    })),
   ]));
+  pieces.push(h("p", { class: "muted", text: `This duty is ${fmtHours(workspace.event.hours)} hours. For an assigned member, lower This duty when they are late or leave early.` }));
   pieces.push(h("p", { class: "muted", text: "Green bar: Standard would select this member. Tinted row: Assign would select this member." }));
   pieces.push(h("div", { class: "table-wrap" }, table));
   pieces.push(h("div", { class: "reason-columns" }, [
@@ -661,13 +925,18 @@ async function setApplied(workspace, memberId, on) {
   await setAppliedList(workspace, [...ids]);
 }
 
-async function setPartyApplied(workspace, party, on) {
-  const ids = new Set(workspace.members.filter((member) => member.applied).map((member) => member.member_id));
-  for (const member of workspace.members.filter((item) => item.party === party)) {
-    if (on) ids.add(member.member_id);
-    else ids.delete(member.member_id);
+async function saveDutyHours(workspace, memberId, value) {
+  try {
+    await api(`/api/events/${workspace.event.id}/hours`, {
+      method: "PUT",
+      body: JSON.stringify({ member_id: memberId, hours: value === "" ? null : Number(value) }),
+    });
+    banner("");
+    await renderAssign();
+  } catch (error) {
+    banner(error.message, "error");
+    await renderAssign();
   }
-  await setAppliedList(workspace, [...ids]);
 }
 
 async function setAppliedList(workspace, memberIds) {
@@ -864,21 +1133,28 @@ function downloadHoursCsv() {
   download(`hours-${data.fy.label.replace("/", "-")}.csv`, rows);
 }
 
-function setSessionView(view) {
-  state.sessionView = view;
-  for (const [id, name] of [["sessions-training", "training"], ["sessions-duties", "duties"]]) {
+function toggleSessionKind(kind) {
+  state.sessionShow[kind] = !state.sessionShow[kind];
+  const button = $(kind === "training" ? "sessions-training" : "sessions-duties");
+  button.classList.toggle("is-on", state.sessionShow[kind]);
+  button.setAttribute("aria-pressed", state.sessionShow[kind] ? "true" : "false");
+  if (state.sessionsReport) paintSessions(state.sessionsReport);
+}
+
+function syncSessionButtons() {
+  for (const [id, kind] of [["sessions-training", "training"], ["sessions-duties", "duties"]]) {
     const button = $(id);
-    const on = name === view;
+    const on = state.sessionShow[kind];
     button.classList.toggle("is-on", on);
     button.setAttribute("aria-pressed", on ? "true" : "false");
   }
-  if (state.sessionsReport) paintSessions(state.sessionsReport);
 }
 
 async function renderSessions() {
   const data = await api(`/api/reports/hours?fy=${state.fy}`);
   state.sessionsReport = data;
-  setSessionView(state.sessionView);
+  syncSessionButtons();
+  paintSessions(data);
 }
 
 function filteredSessionRows(data) {
@@ -887,34 +1163,39 @@ function filteredSessionRows(data) {
   return data.rows.filter((row) => row.member_id.toLowerCase().includes(query));
 }
 
+function sessionTable(title, codeKey, items) {
+  const heading = h("h4", { text: title });
+  if (!items.length) return [heading, h("p", { class: "muted", text: `No ${title.toLowerCase()} this financial year.` })];
+  const table = h("div", { class: "table-wrap" }, h("table", {}, [
+    h("thead", {}, h("tr", {}, ["Code", "Start", "End", "Scheduled", "Attend hours", "Remarks"].map((label) => h("th", { text: label })))),
+    h("tbody", {}, items.map((item) => h("tr", {}, [
+      h("td", { text: item[codeKey] }),
+      h("td", { text: prettyWhen(item.start_datetime) }),
+      h("td", { text: prettyWhen(item.end_datetime) }),
+      h("td", { text: fmtHours(item.hours) }),
+      h("td", { text: fmtHours(item.attend_hours) }),
+      h("td", { text: item.remarks || "" }),
+    ]))),
+  ]));
+  return [heading, table];
+}
+
 function paintSessions(data) {
-  const view = state.sessionView;
   const host = $("sessions-report");
+  if (!state.sessionShow.training && !state.sessionShow.duties) {
+    host.replaceChildren(h("p", { class: "muted", text: "Select Training, Duties, or both." }));
+    return;
+  }
   const rows = filteredSessionRows(data);
   if (!rows.length) {
     host.replaceChildren(h("p", { class: "muted", text: "No members match that ID." }));
     return;
   }
   const blocks = rows.map((row) => {
-    const items = view === "training" ? row.trainings : row.duties;
-    const heading = h("h3", { text: `${row.member_id} · ${row.party}` });
-    if (!items.length) {
-      const empty = view === "training" ? "No training this financial year." : "No duties this financial year.";
-      return h("section", { class: "member-block" }, [heading, h("p", { class: "muted", text: empty })]);
-    }
-    const columns = view === "training"
-      ? ["Training code", "Start", "End", "Hours"]
-      : ["Duty code", "Start", "End", "Hours"];
-    const table = h("div", { class: "table-wrap" }, h("table", {}, [
-      h("thead", {}, h("tr", {}, columns.map((label) => h("th", { text: label })))),
-      h("tbody", {}, items.map((item) => h("tr", {}, [
-        h("td", { text: view === "training" ? item.training_code : item.duty_code }),
-        h("td", { text: prettyWhen(item.start_datetime) }),
-        h("td", { text: prettyWhen(item.end_datetime) }),
-        h("td", { text: fmtHours(item.hours) }),
-      ]))),
-    ]));
-    return h("section", { class: "member-block" }, [heading, table]);
+    const parts = [h("h3", { text: `${row.member_id} · ${row.party}` })];
+    if (state.sessionShow.training) parts.push(...sessionTable("Training", "training_code", row.trainings));
+    if (state.sessionShow.duties) parts.push(...sessionTable("Duties", "duty_code", row.duties));
+    return h("section", { class: "member-block" }, parts);
   });
   host.replaceChildren(...blocks);
 }
@@ -922,32 +1203,81 @@ function paintSessions(data) {
 function downloadSessionsCsv() {
   const data = state.sessionsReport;
   if (!data) return;
-  const training = state.sessionView === "training";
   const rows = [[
     "Financial year",
     "Member ID",
     "Duty party",
-    training ? "Training code" : "Duty code",
+    "Kind",
+    "Code",
     "Start",
     "End",
-    "Hours",
+    "Scheduled hours",
+    "Attend hours",
+    "Remarks",
   ]];
   for (const row of filteredSessionRows(data)) {
-    const items = training ? row.trainings : row.duties;
-    for (const item of items) {
-      rows.push([
-        data.fy.label,
-        row.member_id,
-        row.party,
-        training ? item.training_code : item.duty_code,
-        item.start_datetime,
-        item.end_datetime,
-        item.hours,
-      ]);
+    const groups = [];
+    if (state.sessionShow.training) groups.push(["Training", "training_code", row.trainings]);
+    if (state.sessionShow.duties) groups.push(["Duty", "duty_code", row.duties]);
+    for (const [kind, codeKey, items] of groups) {
+      for (const item of items) {
+        rows.push([
+          data.fy.label,
+          row.member_id,
+          row.party,
+          kind,
+          item[codeKey],
+          item.start_datetime,
+          item.end_datetime,
+          item.hours,
+          item.attend_hours,
+          item.remarks || "",
+        ]);
+      }
     }
   }
-  const kind = training ? "training" : "duties";
-  download(`${kind}-by-member-${data.fy.label.replace("/", "-")}.csv`, rows);
+  download(`sessions-${data.fy.label.replace("/", "-")}.csv`, rows);
+}
+
+async function saveRoster() {
+  try {
+    const data = await api("/api/roster");
+    downloadText("roster.json", JSON.stringify(data, null, 2), "application/json");
+    banner("Roster saved.", "ok");
+  } catch (error) {
+    banner(error.message, "error");
+  }
+}
+
+async function openRosterFile(event) {
+  const input = event.target;
+  const file = input.files && input.files[0];
+  input.value = "";
+  if (!file) return;
+  if (!confirm("Replace the current roster with this file?")) return;
+  try {
+    const payload = JSON.parse(await file.text());
+    await api("/api/roster", { method: "POST", body: JSON.stringify(payload) });
+    state.eventId = null;
+    state.trainingId = null;
+    state.meta = await api("/api/meta");
+    state.fy = state.meta.current_fy;
+    fillYearSelect();
+    banner("Roster opened.", "ok");
+    await refresh();
+  } catch (error) {
+    banner(error.message, "error");
+  }
+}
+
+function downloadText(filename, text, type) {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const link = h("a", { href: url, download: filename });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 async function restoreSample() {
