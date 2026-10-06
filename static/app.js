@@ -4,8 +4,10 @@ const state = {
   meta: null,
   eventId: null,
   trainingId: null,
+  sessionView: "training",
   selectionReport: null,
   hoursReport: null,
+  sessionsReport: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -89,8 +91,15 @@ async function init() {
   $("restore").addEventListener("click", restoreSample);
   $("print-selection").addEventListener("click", () => window.print());
   $("print-hours").addEventListener("click", () => window.print());
+  $("print-sessions").addEventListener("click", () => window.print());
   $("csv-selection").addEventListener("click", downloadSelectionCsv);
   $("csv-hours").addEventListener("click", downloadHoursCsv);
+  $("csv-sessions").addEventListener("click", downloadSessionsCsv);
+  $("sessions-training").addEventListener("click", () => setSessionView("training"));
+  $("sessions-duties").addEventListener("click", () => setSessionView("duties"));
+  $("session-member").addEventListener("input", () => {
+    if (state.sessionsReport) paintSessions(state.sessionsReport);
+  });
   $("member-form").addEventListener("submit", addMember);
   $("event-form").addEventListener("submit", addEvent);
   $("training-form").addEventListener("submit", addTraining);
@@ -108,7 +117,7 @@ async function showTab(tab) {
   document.querySelectorAll("[data-panel]").forEach((panel) => {
     panel.hidden = panel.dataset.panel !== tab;
   });
-  $("fy-control").hidden = !(tab === "members" || tab === "hours");
+  $("fy-control").hidden = !(tab === "members" || tab === "hours" || tab === "sessions");
   await refresh();
 }
 
@@ -120,6 +129,7 @@ async function refresh() {
     else if (state.tab === "assign") await renderAssign();
     else if (state.tab === "selection") await renderSelection();
     else if (state.tab === "hours") await renderHours();
+    else if (state.tab === "sessions") await renderSessions();
   } catch (error) {
     banner(error.message, "error");
   }
@@ -779,24 +789,17 @@ async function renderHours() {
       h("thead", {}, h("tr", {}, [
         "Member ID", "Duty party", "Training hours", "Duty hours", "Attends hours", "Short of 60", "Training %", "Duties", "Requirement",
       ].map((label) => h("th", { text: label })))),
-      h("tbody", {}, data.rows.flatMap((row) => {
-        const duties = row.duties.map((item) => `${item.duty_code} ${fmtHours(item.hours)}h`).join(", ") || "No duties";
-        const trainings = row.trainings.map((item) => `${item.training_code} ${fmtHours(item.hours)}h`).join(", ") || "No training";
-        return [
-          h("tr", {}, [
-            h("td", { text: row.member_id }),
-            h("td", { text: row.party }),
-            h("td", { text: fmtHours(row.training_hours) }),
-            h("td", { text: fmtHours(row.duty_hours) }),
-            h("td", { text: fmtHours(row.attend_hours) }),
-            h("td", { text: fmtHours(row.hour_shortfall) }),
-            h("td", { text: row.training_percent == null ? "—" : `${row.training_percent}%` }),
-            h("td", { text: String(row.duty_count) }),
-            h("td", {}, h("span", { class: row.meets_requirement ? "status met" : "status", text: row.status })),
-          ]),
-          h("tr", {}, h("td", { class: "detail", colspan: "9", text: `Duties: ${duties}. Training: ${trainings}.` })),
-        ];
-      })),
+      h("tbody", {}, data.rows.map((row) => h("tr", {}, [
+        h("td", { text: row.member_id }),
+        h("td", { text: row.party }),
+        h("td", { text: fmtHours(row.training_hours) }),
+        h("td", { text: fmtHours(row.duty_hours) }),
+        h("td", { text: fmtHours(row.attend_hours) }),
+        h("td", { text: fmtHours(row.hour_shortfall) }),
+        h("td", { text: row.training_percent == null ? "—" : `${row.training_percent}%` }),
+        h("td", { text: String(row.duty_count) }),
+        h("td", {}, h("span", { class: row.meets_requirement ? "status met" : "status", text: row.status })),
+      ]))),
     ])),
   );
 }
@@ -843,7 +846,7 @@ function downloadSelectionCsv() {
 function downloadHoursCsv() {
   const data = state.hoursReport;
   if (!data) return;
-  const rows = [["Financial year", "Member ID", "Duty party", "Training hours", "Duty hours", "Attends hours", "Short of 60", "Training %", "Duty count", "Status", "Duties", "Training"]];
+  const rows = [["Financial year", "Member ID", "Duty party", "Training hours", "Duty hours", "Attends hours", "Short of 60", "Training %", "Duty count", "Status"]];
   for (const row of data.rows) {
     rows.push([
       data.fy.label,
@@ -856,11 +859,95 @@ function downloadHoursCsv() {
       row.training_percent ?? "",
       row.duty_count,
       row.status,
-      row.duties.map((item) => item.duty_code).join(" "),
-      row.trainings.map((item) => item.training_code).join(" "),
     ]);
   }
   download(`hours-${data.fy.label.replace("/", "-")}.csv`, rows);
+}
+
+function setSessionView(view) {
+  state.sessionView = view;
+  for (const [id, name] of [["sessions-training", "training"], ["sessions-duties", "duties"]]) {
+    const button = $(id);
+    const on = name === view;
+    button.classList.toggle("is-on", on);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  if (state.sessionsReport) paintSessions(state.sessionsReport);
+}
+
+async function renderSessions() {
+  const data = await api(`/api/reports/hours?fy=${state.fy}`);
+  state.sessionsReport = data;
+  setSessionView(state.sessionView);
+}
+
+function filteredSessionRows(data) {
+  const query = ($("session-member").value || "").trim().toLowerCase();
+  if (!query) return data.rows;
+  return data.rows.filter((row) => row.member_id.toLowerCase().includes(query));
+}
+
+function paintSessions(data) {
+  const view = state.sessionView;
+  const host = $("sessions-report");
+  const rows = filteredSessionRows(data);
+  if (!rows.length) {
+    host.replaceChildren(h("p", { class: "muted", text: "No members match that ID." }));
+    return;
+  }
+  const blocks = rows.map((row) => {
+    const items = view === "training" ? row.trainings : row.duties;
+    const heading = h("h3", { text: `${row.member_id} · ${row.party}` });
+    if (!items.length) {
+      const empty = view === "training" ? "No training this financial year." : "No duties this financial year.";
+      return h("section", { class: "member-block" }, [heading, h("p", { class: "muted", text: empty })]);
+    }
+    const columns = view === "training"
+      ? ["Training code", "Start", "End", "Hours"]
+      : ["Duty code", "Start", "End", "Hours"];
+    const table = h("div", { class: "table-wrap" }, h("table", {}, [
+      h("thead", {}, h("tr", {}, columns.map((label) => h("th", { text: label })))),
+      h("tbody", {}, items.map((item) => h("tr", {}, [
+        h("td", { text: view === "training" ? item.training_code : item.duty_code }),
+        h("td", { text: prettyWhen(item.start_datetime) }),
+        h("td", { text: prettyWhen(item.end_datetime) }),
+        h("td", { text: fmtHours(item.hours) }),
+      ]))),
+    ]));
+    return h("section", { class: "member-block" }, [heading, table]);
+  });
+  host.replaceChildren(...blocks);
+}
+
+function downloadSessionsCsv() {
+  const data = state.sessionsReport;
+  if (!data) return;
+  const training = state.sessionView === "training";
+  const rows = [[
+    "Financial year",
+    "Member ID",
+    "Duty party",
+    training ? "Training code" : "Duty code",
+    "Start",
+    "End",
+    "Hours",
+  ]];
+  for (const row of filteredSessionRows(data)) {
+    const items = training ? row.trainings : row.duties;
+    for (const item of items) {
+      rows.push([
+        data.fy.label,
+        row.member_id,
+        row.party,
+        training ? item.training_code : item.duty_code,
+        item.start_datetime,
+        item.end_datetime,
+        item.hours,
+      ]);
+    }
+  }
+  const kind = training ? "training" : "duties";
+  download(`${kind}-by-member-${data.fy.label.replace("/", "-")}.csv`, rows);
 }
 
 async function restoreSample() {

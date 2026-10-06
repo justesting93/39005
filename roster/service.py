@@ -381,6 +381,7 @@ def compute_totals(
             "training_code": training.training_code,
             "hours": training.hours,
             "start_datetime": training.start_datetime.strftime("%Y-%m-%dT%H:%M"),
+            "end_datetime": training.end_datetime.strftime("%Y-%m-%dT%H:%M"),
         }
         for member_id in snap.attendance.get(training.id, ()):
             if member_id not in totals:
@@ -402,6 +403,7 @@ def compute_totals(
                     "duty_code": event.duty_code,
                     "hours": event.hours,
                     "start_datetime": event.start_datetime.strftime("%Y-%m-%dT%H:%M"),
+                    "end_datetime": event.end_datetime.strftime("%Y-%m-%dT%H:%M"),
                 }
             )
     for item in totals.values():
