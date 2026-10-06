@@ -164,6 +164,91 @@ td input, td select {
   width: 100%;
   min-width: 0;
 }
+.when {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 12.5rem;
+}
+.when-date {
+  background: #0c0c0c;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 7px 8px;
+  min-width: 7.4rem;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+.when-date.is-empty { color: var(--muted); }
+.when-part {
+  width: 2.5rem;
+  min-width: 2.5rem;
+  padding: 7px 2px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.when-colon { color: var(--muted); }
+td .when-date,
+td .when-part {
+  background: transparent;
+  border-color: transparent;
+  padding: 4px 4px;
+}
+td .when-date:hover,
+td .when-date:focus,
+td .when-part:hover,
+td .when-part:focus {
+  border-color: var(--line);
+  background: #0c0c0c;
+}
+td input.when-part { width: 2.5rem; }
+.when-pop {
+  position: fixed;
+  z-index: 40;
+  width: 280px;
+  padding: 10px;
+  background: #141414;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+}
+.when-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-family: var(--font-condensed);
+}
+.when-bar button { padding: 4px 8px; }
+.when-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px;
+}
+.when-dow {
+  text-align: center;
+  color: var(--muted);
+  font-family: var(--font-condensed);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 4px 0;
+}
+.when-day {
+  background: transparent;
+  color: var(--ink);
+  border: 0;
+  border-radius: 4px;
+  padding: 6px 0;
+}
+.when-day.is-out { color: #5a5a5a; }
+.when-day.is-today { outline: 1px solid #8a8a8a; outline-offset: -1px; }
+.when-day.is-picked,
+.when-day.is-picked:hover { background: #3a3a3a; color: var(--accent-ink); }
+.when-day:hover { background: #2a2a2a; }
 td input.remarks { min-width: 8rem; }
 td input, td select {
   border-color: transparent;
@@ -304,7 +389,7 @@ td input:focus, td select:focus, td input:hover, td select:hover {
 }
 
 @media print {
-  header, #banner, .no-print { display: none !important; }
+  header, #banner, .no-print, .when-pop { display: none !important; }
   body { background: white; color: black; }
   main { max-width: none; padding: 0; }
   .table-wrap, .report-block, .reason-card, .stat, .cal-grid, .cal-day { background: white; color: black; border-color: #bbb; }

@@ -85,8 +85,8 @@
       </div>
       <form id="event-form" class="inline-form">
         <label>Duty code <input name="duty_code" required maxlength="32" autocomplete="off"></label>
-        <label>Duty start <input name="start_datetime" type="datetime-local" required></label>
-        <label>Duty end <input name="end_datetime" type="datetime-local" required></label>
+        <label>Duty start <span data-when="start_datetime" data-when-label="Duty start"></span></label>
+        <label>Duty end <span data-when="end_datetime" data-when-label="Duty end"></span></label>
         <label>Required members <input name="required_members" type="number" min="1" max="500" value="1" required></label>
         <label>Remarks <input name="remarks" maxlength="500" autocomplete="off"></label>
         <button type="submit">Add event</button>
@@ -123,8 +123,8 @@
       </div>
       <form id="training-form" class="inline-form">
         <label>Training code <input name="training_code" required maxlength="32" autocomplete="off"></label>
-        <label>Start <input name="start_datetime" type="datetime-local" required></label>
-        <label>End <input name="end_datetime" type="datetime-local" required></label>
+        <label>Start <span data-when="start_datetime" data-when-label="Start"></span></label>
+        <label>End <span data-when="end_datetime" data-when-label="End"></span></label>
         <label>Remarks <input name="remarks" maxlength="500" autocomplete="off"></label>
         <button type="submit">Add training</button>
         <span class="pair">

@@ -63,6 +63,251 @@ function banner(text, kind = "") {
   el.className = kind ? `banner ${kind}` : "banner";
 }
 
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+function monthTitle(year, month) {
+  return `${MONTHS[month]} ${year}`;
+}
+
+function splitStamp(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value || "");
+  if (!match) return null;
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  if (hour > 23 || minute > 59) return null;
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]) - 1,
+    day: Number(match[3]),
+    hour: match[4],
+    minute: match[5],
+  };
+}
+
+function stampOf(parts) {
+  const month = String(parts.month + 1).padStart(2, "0");
+  const day = String(parts.day).padStart(2, "0");
+  return `${parts.year}-${month}-${day}T${parts.hour}:${parts.minute}`;
+}
+
+function dateLabel(parts) {
+  const month = String(parts.month + 1).padStart(2, "0");
+  const day = String(parts.day).padStart(2, "0");
+  return `${parts.year}-${month}-${day}`;
+}
+
+let whenPop = null;
+let whenAnchor = null;
+let whenView = null;
+let whenSelected = null;
+let whenOnPick = null;
+
+function ensureWhenPop() {
+  if (whenPop) return;
+  whenPop = h("div", { class: "when-pop", role: "dialog", "aria-label": "Choose date", hidden: true });
+  document.body.append(whenPop);
+  document.addEventListener("mousedown", (event) => {
+    if (!whenPop || whenPop.hidden) return;
+    if (whenPop.contains(event.target) || whenAnchor?.contains(event.target)) return;
+    closeWhenPicker();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeWhenPicker();
+  });
+  window.addEventListener("resize", closeWhenPicker);
+  document.addEventListener("scroll", closeWhenPicker, true);
+}
+
+function closeWhenPicker() {
+  if (whenPop) whenPop.hidden = true;
+  whenAnchor = null;
+  whenOnPick = null;
+}
+
+function shiftWhen(step) {
+  const next = new Date(whenView.year, whenView.month + step, 1);
+  whenView = { year: next.getFullYear(), month: next.getMonth() };
+  paintWhenPop();
+}
+
+function paintWhenPop() {
+  const { year, month } = whenView;
+  const bar = h("div", { class: "when-bar" }, [
+    h("button", {
+      type: "button",
+      class: "secondary",
+      text: "Previous",
+      "aria-label": "Previous month",
+      onClick: () => shiftWhen(-1),
+    }),
+    h("span", { text: monthTitle(year, month) }),
+    h("button", {
+      type: "button",
+      class: "secondary",
+      text: "Next",
+      "aria-label": "Next month",
+      onClick: () => shiftWhen(1),
+    }),
+  ]);
+  const grid = h("div", { class: "when-grid" });
+  for (const name of ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]) {
+    grid.append(h("div", { class: "when-dow", text: name }));
+  }
+  const first = new Date(year, month, 1);
+  const lead = (first.getDay() + 6) % 7;
+  const today = new Date();
+  for (let index = 0; index < 42; index += 1) {
+    const day = new Date(year, month, 1 - lead + index);
+    const picked = whenSelected
+      && day.getFullYear() === whenSelected.year
+      && day.getMonth() === whenSelected.month
+      && day.getDate() === whenSelected.day;
+    grid.append(h("button", {
+      type: "button",
+      class: [
+        "when-day",
+        day.getMonth() === month ? "" : "is-out",
+        sameDay(day, today) ? "is-today" : "",
+        picked ? "is-picked" : "",
+      ].filter(Boolean).join(" "),
+      text: String(day.getDate()),
+      onClick: () => {
+        const pick = { year: day.getFullYear(), month: day.getMonth(), day: day.getDate() };
+        const callback = whenOnPick;
+        closeWhenPicker();
+        callback(pick);
+      },
+    }));
+  }
+  whenPop.replaceChildren(bar, grid);
+}
+
+function openWhenPicker(anchor, current, onPick) {
+  ensureWhenPop();
+  if (whenAnchor === anchor && !whenPop.hidden) {
+    closeWhenPicker();
+    return;
+  }
+  whenAnchor = anchor;
+  whenOnPick = onPick;
+  whenSelected = current ? { year: current.year, month: current.month, day: current.day } : null;
+  const base = current || new Date();
+  whenView = {
+    year: current ? current.year : base.getFullYear(),
+    month: current ? current.month : base.getMonth(),
+  };
+  paintWhenPop();
+  whenPop.hidden = false;
+  const rect = anchor.getBoundingClientRect();
+  const popRect = whenPop.getBoundingClientRect();
+  let top = rect.bottom + 6;
+  if (top + popRect.height > window.innerHeight - 8) top = Math.max(8, rect.top - popRect.height - 6);
+  let left = Math.min(rect.left, window.innerWidth - popRect.width - 8);
+  whenPop.style.top = `${top}px`;
+  whenPop.style.left = `${Math.max(8, left)}px`;
+}
+
+function whenField({ name, value, label, onCommit }) {
+  let current = splitStamp(value);
+  const root = h("span", { class: "when" });
+  const hidden = name ? h("input", { type: "hidden", name, value: current ? stampOf(current) : "" }) : null;
+  const dateBtn = h("button", {
+    type: "button",
+    class: "when-date is-empty",
+    "aria-label": label ? `${label} date` : "Date",
+    "aria-haspopup": "dialog",
+  });
+  const hour = h("input", {
+    class: "when-part",
+    inputmode: "numeric",
+    maxlength: "2",
+    "aria-label": label ? `${label} hour` : "Hour",
+    autocomplete: "off",
+  });
+  const minute = h("input", {
+    class: "when-part",
+    inputmode: "numeric",
+    maxlength: "2",
+    "aria-label": label ? `${label} minute` : "Minute",
+    autocomplete: "off",
+  });
+
+  function paint() {
+    dateBtn.textContent = current ? dateLabel(current) : "Date";
+    dateBtn.classList.toggle("is-empty", !current);
+    hour.value = current ? current.hour : "";
+    minute.value = current ? current.minute : "";
+    if (hidden) hidden.value = current ? stampOf(current) : "";
+  }
+
+  function publish(next) {
+    const previous = current ? stampOf(current) : "";
+    current = next;
+    paint();
+    const valueNow = current ? stampOf(current) : "";
+    if (onCommit && valueNow && valueNow !== previous) onCommit(valueNow);
+  }
+
+  dateBtn.addEventListener("click", () => {
+    openWhenPicker(dateBtn, current, (picked) => {
+      publish({
+        ...picked,
+        hour: current?.hour || "09",
+        minute: current?.minute || "00",
+      });
+    });
+  });
+
+  function digitsOnly(event) {
+    event.target.value = event.target.value.replace(/\D/g, "").slice(0, 2);
+  }
+  hour.addEventListener("input", digitsOnly);
+  minute.addEventListener("input", digitsOnly);
+
+  function finishTime() {
+    if (!current) {
+      hour.value = "";
+      minute.value = "";
+      return;
+    }
+    if (hour.value === "" || minute.value === "") {
+      paint();
+      return;
+    }
+    const hourValue = Number(hour.value);
+    const minuteValue = Number(minute.value);
+    if (hourValue > 23 || minuteValue > 59) {
+      paint();
+      return;
+    }
+    publish({
+      ...current,
+      hour: String(hourValue).padStart(2, "0"),
+      minute: String(minuteValue).padStart(2, "0"),
+    });
+  }
+  hour.addEventListener("change", finishTime);
+  minute.addEventListener("change", finishTime);
+
+  if (hidden) root.append(hidden);
+  root.append(dateBtn, hour, h("span", { class: "when-colon", text: ":" }), minute);
+  paint();
+  queueMicrotask(() => {
+    const form = root.closest("form");
+    if (!form) return;
+    form.addEventListener("reset", () => {
+      setTimeout(() => {
+        current = hidden ? splitStamp(hidden.value) : null;
+        paint();
+      }, 0);
+    });
+  });
+  return root;
+}
+
 function partySelect(selected, onChange) {
   const select = h("select", { "aria-label": "Duty party", onChange });
   for (const party of ["DP1", "DP2", "DP3"]) {
@@ -126,6 +371,9 @@ async function init() {
   });
   $("cal-training").addEventListener("click", () => toggleCalendarKind("training"));
   $("cal-duties").addEventListener("click", () => toggleCalendarKind("duties"));
+  document.querySelectorAll("[data-when]").forEach((slot) => {
+    slot.replaceWith(whenField({ name: slot.dataset.when, label: slot.dataset.whenLabel }));
+  });
   banner("");
   await showTab("members");
 }
@@ -479,17 +727,15 @@ async function renderEvents() {
         "aria-label": `Duty code ${item.duty_code}`,
         onChange: (event) => saveEvent(item, { duty_code: event.target.value.trim() }),
       })),
-      h("td", {}, h("input", {
-        type: "datetime-local",
+      h("td", {}, whenField({
         value: item.start_datetime,
-        "aria-label": `Duty start ${item.duty_code}`,
-        onChange: (event) => saveEvent(item, { start_datetime: event.target.value }),
+        label: `Duty start ${item.duty_code}`,
+        onCommit: (value) => saveEvent(item, { start_datetime: value }),
       })),
-      h("td", {}, h("input", {
-        type: "datetime-local",
+      h("td", {}, whenField({
         value: item.end_datetime,
-        "aria-label": `Duty end ${item.duty_code}`,
-        onChange: (event) => saveEvent(item, { end_datetime: event.target.value }),
+        label: `Duty end ${item.duty_code}`,
+        onCommit: (value) => saveEvent(item, { end_datetime: value }),
       })),
       h("td", { text: fmtHours(item.hours) }),
       h("td", {}, h("input", {
@@ -602,17 +848,15 @@ async function renderTraining() {
         "aria-label": `Training code ${item.training_code}`,
         onChange: (event) => saveTraining(item, { training_code: event.target.value.trim() }),
       })),
-      h("td", {}, h("input", {
-        type: "datetime-local",
+      h("td", {}, whenField({
         value: item.start_datetime,
-        "aria-label": `Training start ${item.training_code}`,
-        onChange: (event) => saveTraining(item, { start_datetime: event.target.value }),
+        label: `Training start ${item.training_code}`,
+        onCommit: (value) => saveTraining(item, { start_datetime: value }),
       })),
-      h("td", {}, h("input", {
-        type: "datetime-local",
+      h("td", {}, whenField({
         value: item.end_datetime,
-        "aria-label": `Training end ${item.training_code}`,
-        onChange: (event) => saveTraining(item, { end_datetime: event.target.value }),
+        label: `Training end ${item.training_code}`,
+        onCommit: (value) => saveTraining(item, { end_datetime: value }),
       })),
       h("td", { text: fmtHours(item.hours) }),
       h("td", {}, h("input", {
@@ -1358,7 +1602,7 @@ async function renderCalendar() {
     state.calendar = { year: focus.getFullYear(), month: focus.getMonth() };
   }
   const { year, month } = state.calendar;
-  $("cal-title").textContent = new Date(year, month, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  $("cal-title").textContent = monthTitle(year, month);
   for (const [id, kind] of [["cal-training", "training"], ["cal-duties", "duties"]]) {
     const on = state.calendarShow[kind];
     $(id).classList.toggle("is-on", on);
