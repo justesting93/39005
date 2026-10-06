@@ -105,7 +105,7 @@ def test_nobody_applied_does_not_rotate():
     plan = plan_assignment("standard", event, members, set(), [], {}, {})
     assert plan.selected == []
     assert plan.shortfall == 2
-    assert plan.party_order_after == ["DP1", "DP2", "DP3"]
+    assert plan.party_order_after == ["DP2", "DP3", "DP1"]
     assert plan.queues_after["DP1"] == ["P1", "P2", "P3", "P4"]
 
 
@@ -176,3 +176,31 @@ def test_assign_still_requires_an_application():
     plan = plan_assignment("assign", event, members, {"B"}, [], {}, stats)
     assert plan.selected == ["B"]
     assert "has not applied" in next(row.reason for row in plan.rows if row.member_id == "A")
+
+
+def test_unassigned_earlier_duty_still_moves_the_party_turn():
+    members = roster()
+    first = duty(1, "E1", "2026-10-06T09:00", "2026-10-06T13:00", 2)
+    second = duty(2, "E2", "2026-10-07T09:00", "2026-10-07T12:00", 1)
+    applied = {member.member_id for member in members}
+    plan = plan_assignment("standard", second, members, applied, [(first, [])], {}, {})
+    assert plan.party_order_before[0] == "DP2"
+    assert plan.selected == ["P5"]
+    assert plan.queues_before["DP1"] == ["P1", "P2", "P3", "P4"]
+
+
+def test_assign_fills_the_party_on_turn_before_fewer_hours_elsewhere():
+    members = roster()
+    first = duty(1, "E1", "2026-10-06T09:00", "2026-10-06T13:00", 2)
+    second = duty(2, "E2", "2026-10-07T09:00", "2026-10-07T12:00", 1)
+    stats = {member.member_id: HourStats(8, 0, 68, 0) for member in members}
+    stats["P3"] = HourStats(0, 0, 68, 0)
+    applied = {member.member_id for member in members}
+    plan = plan_assignment("assign", second, members, applied, [(first, [])], {}, stats)
+    assert plan.party_order_before == ["DP2", "DP3", "DP1"]
+    assert plan.selected == ["P5"]
+    reason = next(row.reason for row in plan.rows if row.member_id == "P5")
+    assert "DP2" in reason
+    assert "party priority 1" in reason
+    skipped = next(row.reason for row in plan.rows if row.member_id == "P3")
+    assert "party turn" in skipped

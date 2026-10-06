@@ -559,10 +559,10 @@ function paintAssign(events, workspace) {
     h("div", { class: "inline-form" }, [
       h("label", {}, ["Duty", select]),
     ]),
-    h("p", { class: "muted", text: `Hour rules use financial year ${workspace.fy.label} (${workspace.fy.start} to ${workspace.fy.end}) because this duty starts then. The rolling list includes earlier assigned duties only.` }),
+    h("p", { class: "muted", text: `Hour rules use financial year ${workspace.fy.label} (${workspace.fy.start} to ${workspace.fy.end}) because this duty starts then. Each earlier duty moves the party turn on by one, whether or not anyone was assigned. Member queues move only for people who were assigned.` }),
   ];
   if (workspace.earlier.length) {
-    pieces.push(h("p", { text: `Earlier duties in the rolling list: ${workspace.earlier.map((item) => `${item.duty_code} (${item.member_ids.join(", ")})`).join("; ")}.` }));
+    pieces.push(h("p", { text: `Earlier duties in the rolling list: ${workspace.earlier.map((item) => `${item.duty_code} (${item.member_ids.length ? item.member_ids.join(", ") : "party turn only"})`).join("; ")}.` }));
   }
   if (workspace.later.length) {
     pieces.push(h("p", { class: "callout warn", text: `Already assigned later, so not part of this rolling position: ${workspace.later.map((item) => item.duty_code).join(", ")}. Re-run if this duty should flow forward.` }));

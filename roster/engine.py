@@ -1,15 +1,18 @@
 """Standard rolling assignment and the three-priority Assign method.
 
-Standard walks a rolling list. The three duty parties take turns at the front
-of the list. Inside a party, members also form a queue. A member is taken only
-if they applied and they are not already on an overlapping duty. Taken members
-move to the back of their own party queue. If nobody is taken, the queues stay
-put.
+Standard walks a rolling list. Each duty, in start order, gives the turn to
+the next duty party: the first duty is DP1, the next is DP2, then DP3, then
+DP1 again. A duty uses its turn even when nobody is assigned. Inside the party
+on turn, members form a queue. A member is taken only if they applied and they
+are not already on an overlapping duty. Taken members move to the back of their
+own party queue. If that party cannot fill the duty, the next party in the turn
+is used.
 
-Assign uses the same eligible set, ordered by:
+Assign uses the same party turn, then the same eligible members inside a party,
+ordered by:
 1. Annual hours still open, fewest attend hours first (training plus duty).
 2. Fewer duties already taken in that financial year.
-3. The standard rolling order.
+3. The member queue inside the party.
 """
 
 from __future__ import annotations
@@ -81,7 +84,11 @@ def apply_rotation(
     party_order: list[str],
     selected: list[str],
 ) -> tuple[dict[str, list[str]], list[str]]:
-    """Move assigned members to the back of their party and advance the party turn."""
+    """Move assigned members to the back of their party and advance the party turn.
+
+    Every duty advances the party turn, including a duty with nobody assigned.
+    Member queues move only for the people who were actually taken.
+    """
     selected_set = set(selected)
     rotated = {}
     for party in PARTIES:
@@ -103,9 +110,8 @@ def rolling_before(
         earlier_assigned,
         key=lambda item: (item[0].start_datetime, item[0].id or 0),
     )
-    for event, selected in ordered:
-        if selected:
-            queues, party_order = apply_rotation(queues, party_order, selected)
+    for _event, selected in ordered:
+        queues, party_order = apply_rotation(queues, party_order, selected)
     return queues, party_order
 
 
@@ -221,11 +227,14 @@ def plan_assignment(
         member_stats = stats.get(member.member_id, HourStats())
         if method == "standard":
             return (rank_of[member.member_id],)
-        return priority_key(
-            meets_requirement(member_stats),
-            member_stats.attend_hours,
-            member_stats.duty_count,
-            rank_of[member.member_id],
+        return (
+            party_priority[member.party],
+            *priority_key(
+                meets_requirement(member_stats),
+                member_stats.attend_hours,
+                member_stats.duty_count,
+                rank_of[member.member_id],
+            ),
         )
 
     eligible_sorted = sorted(eligible, key=sort_key)
@@ -282,18 +291,17 @@ def plan_assignment(
     else:
         rows.sort(key=_assign_display_key)
 
+    queues_after, party_after = apply_rotation(queues, party_order, chosen_ids)
     if chosen_ids:
-        queues_after, party_after = apply_rotation(queues, party_order, chosen_ids)
         rolling_note = (
             f"Assigned members ({', '.join(chosen_ids)}) move to the back of their own "
             f"duty party queue, keeping the order they already had in that queue. "
             f"The next duty's first priority party is {party_after[0]}."
         )
     else:
-        queues_after = {party: list(queue) for party, queue in queues.items()}
-        party_after = list(party_order)
         rolling_note = (
-            "Nobody was assigned, so the duty-party turn and the member queues stay where they are."
+            "Nobody was assigned, so the member queues stay where they are. "
+            f"This duty still uses a party turn. The next duty's first priority party is {party_after[0]}."
         )
 
     shortfall = max(0, event.required_members - len(chosen_ids))
@@ -351,8 +359,9 @@ def _summary(method, event: Event, selected: list[str], party_order: list[str], 
         )
     return (
         f"Assign for {event.duty_code} selected {names}. "
-        f"Order used: open annual hours (fewest hours first), then fewer duties, "
-        f"then the rolling list ({turn}). {filled}{gap}"
+        f"This duty's party turn starts at {party_order[0]} ({turn}). "
+        f"Inside a party: open annual hours (fewest hours first), then fewer duties, "
+        f"then the member queue. {filled}{gap}"
     )
 
 
@@ -396,7 +405,10 @@ def _assign_reason(row: DecisionRow, eligible_rows: list[DecisionRow], required:
             f"({', '.join(row.clash_with)})."
         )
     elif row.selected:
-        lead = f"Selected as pick {row.pick_index} of {required}."
+        lead = (
+            f"Selected as pick {row.pick_index} of {required}. "
+            f"{row.party} is this duty's party priority {row.party_priority}."
+        )
     else:
         lead = (
             f"Not selected: {row.member_id} applied and is free, "
@@ -455,6 +467,12 @@ def _requirement_sentence(row: DecisionRow) -> str:
 
 
 def _compare(better: DecisionRow, worse: DecisionRow) -> str:
+    if better.party_priority != worse.party_priority:
+        return (
+            f"{better.member_id} is ahead of {worse.member_id} because this duty's party turn "
+            f"reaches {better.party} (priority {better.party_priority}) before {worse.party} "
+            f"(priority {worse.party_priority})."
+        )
     better_key = priority_key(
         better.meets_requirement, better.attend_hours, better.duty_count, better.standard_rank
     )

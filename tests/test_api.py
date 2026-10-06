@@ -129,7 +129,7 @@ def test_rerun_later_duties_in_date_order(tmp_path):
     assert rerun.status_code == 200
     results = {item["duty_code"]: item["selected"] for item in rerun.get_json()["results"]}
     assert results["E1"] == ["P1", "P2"]
-    assert results["E4"] == ["P5"]
+    assert results["E4"] == ["P3"]
 
 
 def test_hours_follow_the_financial_year_boundary(tmp_path):

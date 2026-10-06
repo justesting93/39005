@@ -420,22 +420,20 @@ def _compute(snap: Snapshot, event: Event, method: str) -> dict:
     for other in snap.events:
         if other.id == event.id:
             continue
-        assigned = snap.assignments.get(other.id, [])
-        if not assigned:
-            continue
-        if event.overlaps(other):
+        assigned = list(snap.assignments.get(other.id, []))
+        if assigned and event.overlaps(other):
             for member_id in assigned:
                 overlapping[member_id].append(other.duty_code)
         item = {
             "duty_code": other.duty_code,
             "start_datetime": other.start_datetime.strftime("%Y-%m-%dT%H:%M"),
             "method": other.assignment_method,
-            "member_ids": list(assigned),
+            "member_ids": assigned,
         }
         if (other.start_datetime, other.id) < (event.start_datetime, event.id):
             earlier_assigned.append((other, assigned))
             earlier_meta.append(item)
-        else:
+        elif assigned:
             later_meta.append(item)
     plan = plan_assignment(
         method=method,
