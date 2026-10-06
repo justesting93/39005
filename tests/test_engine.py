@@ -76,7 +76,7 @@ def test_skip_member_who_did_not_apply_and_keep_their_place():
     assert plan.selected == ["P2", "P3"]
     assert plan.queues_after["DP1"] == ["P1", "P4", "P2", "P3"]
     skipped = next(row for row in plan.rows if row.member_id == "P1")
-    assert "has not applied" in skipped.reason
+    assert "not applied" in skipped.reason.lower()
 
 
 def test_overlap_skips_without_losing_queue_place():
@@ -175,7 +175,7 @@ def test_assign_still_requires_an_application():
     stats = {"A": HourStats(0, 0, 0, 0), "B": HourStats(0, 50, 0, 0)}
     plan = plan_assignment("assign", event, members, {"B"}, [], {}, stats)
     assert plan.selected == ["B"]
-    assert "has not applied" in next(row.reason for row in plan.rows if row.member_id == "A")
+    assert "not applied" in next(row.reason for row in plan.rows if row.member_id == "A").lower()
 
 
 def test_unassigned_earlier_duty_still_moves_the_party_turn():

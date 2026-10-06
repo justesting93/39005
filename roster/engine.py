@@ -373,56 +373,45 @@ def _write_reasons(method, rows, eligible_rows, required, selected_ids) -> None:
             row.reason = _assign_reason(row, eligible_rows, required)
 
 
+def _points(*lines: str) -> str:
+    return "\n".join(line for line in lines if line)
+
+
 def _standard_reason(row: DecisionRow, required: int, selected_ids: list[str]) -> str:
-    place = _rolling_sentence(row)
     if not row.applied:
-        return f"Not selected: {row.member_id} has not applied for this duty. {place}"
+        return "Has not applied"
     if row.clash_with:
-        names = ", ".join(row.clash_with)
-        return (
-            f"Not selected: {row.member_id} applied but already has an overlapping duty ({names}). {place}"
-        )
+        return f"Has an overlapping duty: {', '.join(row.clash_with)}"
     if row.selected:
-        return (
-            f"Selected as pick {row.pick_index} of {required}. "
-            f"Standard method only: {row.party} is priority {row.party_priority} of the three duty parties, "
-            f"and {row.member_id} is position {row.queue_position} in that party's queue "
-            f"(overall rank {row.standard_rank}). Hour balance and duty count were not used."
+        return _points(
+            f"Selected, pick {row.pick_index} of {required}",
+            f"{row.party} priority {row.party_priority}, queue {row.queue_position}",
+            "Hours were not used",
         )
-    filled_by = f" ({', '.join(selected_ids)})" if selected_ids else ""
-    return (
-        f"Not selected: {row.member_id} applied and is free, at standard rank {row.standard_rank}, "
-        f"but higher-priority applicants already filled the {required} places{filled_by}. {place}"
+    filled = ", ".join(selected_ids) if selected_ids else "others"
+    return _points(
+        "Applied and free",
+        f"Rank {row.standard_rank}, places filled by {filled}",
     )
 
 
 def _assign_reason(row: DecisionRow, eligible_rows: list[DecisionRow], required: int) -> str:
     if not row.applied:
-        lead = f"Not selected: {row.member_id} has not applied for this duty."
-    elif row.clash_with:
-        lead = (
-            f"Not selected: {row.member_id} applied but already has an overlapping duty "
-            f"({', '.join(row.clash_with)})."
-        )
-    elif row.selected:
-        lead = (
-            f"Selected as pick {row.pick_index} of {required}. "
-            f"{row.party} is this duty's party priority {row.party_priority}."
-        )
-    else:
-        lead = (
-            f"Not selected: {row.member_id} applied and is free, "
-            f"but only {required} places are open."
-        )
-    parts = [lead, _requirement_sentence(row), _duty_sentence(row), _rolling_sentence(row)]
+        return "Has not applied"
+    if row.clash_with:
+        return f"Has an overlapping duty: {', '.join(row.clash_with)}"
+    points = [
+        f"Selected, pick {row.pick_index} of {required}" if row.selected else f"Not selected, only {required} places",
+        f"{row.party} party priority {row.party_priority}",
+        _requirement_point(row),
+    ]
     if not row.eligible:
-        return " ".join(parts)
-
+        return _points(*points)
     index = next(i for i, item in enumerate(eligible_rows) if item.member_id == row.member_id)
     if row.selected and index + 1 < len(eligible_rows):
-        parts.append(_compare(row, eligible_rows[index + 1]))
+        points.append(_compare(row, eligible_rows[index + 1], row))
     if not row.selected and index > 0:
-        parts.append(_compare(eligible_rows[index - 1], row))
+        points.append(_compare(eligible_rows[index - 1], row, row))
     if row.selected:
         overtaken = [
             other
@@ -433,46 +422,25 @@ def _assign_reason(row: DecisionRow, eligible_rows: list[DecisionRow], required:
             earliest = min(overtaken, key=lambda other: other.standard_rank)
             next_id = eligible_rows[index + 1].member_id if index + 1 < len(eligible_rows) else None
             if earliest.member_id != next_id:
-                parts.append(_compare(row, earliest))
-    return " ".join(parts)
+                points.append(_compare(row, earliest, row))
+    return _points(*points)
 
 
-def _rolling_sentence(row: DecisionRow) -> str:
-    return (
-        f"Standard rolling rank {row.standard_rank}: {row.party} is party priority "
-        f"{row.party_priority}, queue position {row.queue_position}."
+def _requirement_point(row: DecisionRow) -> str:
+    hours = f"{fmt_hours(row.attend_hours)}h of {fmt_hours(HOUR_TARGET)}h"
+    if row.meets_requirement:
+        return f"Annual requirement met ({hours})"
+    return f"Annual requirement open ({hours})"
+
+
+def _compare(better: DecisionRow, worse: DecisionRow, viewpoint: DecisionRow) -> str:
+    place = (
+        f"Ahead of {worse.member_id}"
+        if viewpoint.member_id == better.member_id
+        else f"Behind {better.member_id}"
     )
-
-
-def _duty_sentence(row: DecisionRow) -> str:
-    return f"Duty count this financial year: {row.duty_count}."
-
-
-def _requirement_sentence(row: DecisionRow) -> str:
-    if row.training_offered <= 0:
-        training = "No training has been offered this financial year, so the 30% training rule is met."
-    else:
-        percent = 100.0 * row.training_hours / row.training_offered
-        state = "met" if row.meets_training else "not met"
-        training = (
-            f"Training {fmt_hours(row.training_hours)}h of {fmt_hours(row.training_offered)}h offered "
-            f"({percent:.1f}%, 30% rule {state})."
-        )
-    total_state = "met" if row.meets_total else "not met"
-    overall = "Annual requirement met." if row.meets_requirement else "Annual requirement not met."
-    return (
-        f"{overall} Attend hours {fmt_hours(row.attend_hours)} of {fmt_hours(HOUR_TARGET)} "
-        f"({total_state}). {training}"
-    )
-
-
-def _compare(better: DecisionRow, worse: DecisionRow) -> str:
     if better.party_priority != worse.party_priority:
-        return (
-            f"{better.member_id} is ahead of {worse.member_id} because this duty's party turn "
-            f"reaches {better.party} (priority {better.party_priority}) before {worse.party} "
-            f"(priority {worse.party_priority})."
-        )
+        return f"{place}: party turn reaches {better.party} before {worse.party}"
     better_key = priority_key(
         better.meets_requirement, better.attend_hours, better.duty_count, better.standard_rank
     )
@@ -481,25 +449,22 @@ def _compare(better: DecisionRow, worse: DecisionRow) -> str:
     )
     if better_key[0] != worse_key[0]:
         return (
-            f"{better.member_id} is ahead of {worse.member_id} because {better.member_id} still has "
-            f"the annual requirement open and {worse.member_id} has met it "
-            f"({fmt_hours(worse.attend_hours)}h)."
+            f"{place}: annual requirement open, "
+            f"{worse.member_id} has met it ({fmt_hours(worse.attend_hours)}h)"
         )
     if better_key[1] != worse_key[1]:
         return (
-            f"{better.member_id} is ahead of {worse.member_id} because {better.member_id} has attended "
-            f"fewer hours ({fmt_hours(better.attend_hours)}h versus {fmt_hours(worse.attend_hours)}h) "
-            f"and is further from the {fmt_hours(HOUR_TARGET)}-hour requirement."
+            f"{place}: fewer hours "
+            f"({fmt_hours(better.attend_hours)}h vs {fmt_hours(worse.attend_hours)}h)"
         )
     if better_key[2] != worse_key[2]:
         return (
-            f"{better.member_id} is ahead of {worse.member_id} so the duties stay even: "
-            f"{better.duty_count} duties this year versus {worse.duty_count}."
+            f"{place}: duties stay even "
+            f"({better.duty_count} vs {worse.duty_count})"
         )
     if better_key[3] != worse_key[3]:
         return (
-            f"{better.member_id} is tied with {worse.member_id} on the hours requirement and on duty count. "
-            f"Standard rolling rank {better.standard_rank} puts {better.member_id} ahead of rank "
-            f"{worse.standard_rank}."
+            f"{place}: rolling rank {better.standard_rank} "
+            f"before rank {worse.standard_rank}"
         )
-    return f"{better.member_id} and {worse.member_id} were ordered by the priority rules."
+    return f"{place} on the same rules"

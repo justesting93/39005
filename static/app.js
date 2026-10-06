@@ -5,6 +5,8 @@ const state = {
   eventId: null,
   trainingId: null,
   sessionShow: { training: true, duties: true },
+  calendar: null,
+  calendarShow: { training: true, duties: true },
   selectionReport: null,
   hoursReport: null,
   sessionsReport: null,
@@ -115,6 +117,15 @@ async function init() {
   $("export-training").addEventListener("click", exportTraining);
   $("import-training").addEventListener("click", () => $("training-import").click());
   $("training-import").addEventListener("change", importTrainingFile);
+  $("cal-prev").addEventListener("click", () => shiftCalendar(-1));
+  $("cal-next").addEventListener("click", () => shiftCalendar(1));
+  $("cal-today").addEventListener("click", () => {
+    const today = new Date();
+    state.calendar = { year: today.getFullYear(), month: today.getMonth() };
+    renderCalendar();
+  });
+  $("cal-training").addEventListener("click", () => toggleCalendarKind("training"));
+  $("cal-duties").addEventListener("click", () => toggleCalendarKind("duties"));
   banner("");
   await showTab("members");
 }
@@ -142,6 +153,7 @@ async function refresh() {
     else if (state.tab === "selection") await renderSelection();
     else if (state.tab === "hours") await renderHours();
     else if (state.tab === "sessions") await renderSessions();
+    else if (state.tab === "calendar") await renderCalendar();
   } catch (error) {
     banner(error.message, "error");
   }
@@ -886,7 +898,7 @@ function paintAssign(events, workspace) {
       savedBits.push(h("p", { class: "callout warn", text: workspace.saved_stale_reasons.join(" ") }));
     }
     savedBits.push(h("ol", {}, (workspace.saved.rows || []).filter((row) => row.selected).map((row) => (
-      h("li", {}, [h("strong", { text: row.member_id }), ` — ${row.reason}`])
+      h("li", {}, [h("strong", { text: row.member_id }), reasonList(row.reason)])
     ))));
     pieces.push(h("div", { class: "report-block" }, savedBits));
   }
@@ -907,6 +919,12 @@ function renderRolling(workspace) {
   )));
 }
 
+function reasonList(text) {
+  const points = String(text || "").split("\n").map((line) => line.trim()).filter(Boolean);
+  if (points.length <= 1) return h("span", { text: points[0] ? ` ${points[0]}` : "" });
+  return h("ul", { class: "reason-points" }, points.map((point) => h("li", { text: point })));
+}
+
 function reasonCard(title, plan) {
   const names = plan.selected.length ? plan.selected.join(", ") : "nobody";
   const gap = plan.shortfall ? ` Short by ${plan.shortfall}.` : "";
@@ -914,7 +932,10 @@ function reasonCard(title, plan) {
     h("h3", { text: title }),
     h("p", {}, [h("strong", { text: names }), gap]),
     h("p", { class: "muted", text: "Preview only, until Standard or Assign is clicked." }),
-    h("ol", {}, plan.rows.map((row) => h("li", {}, [h("strong", { text: `${row.member_id} · ${row.outcome}` }), ` ${row.reason}`]))),
+    h("ol", {}, plan.rows.map((row) => h("li", {}, [
+      h("strong", { text: `${row.member_id} · ${row.outcome}` }),
+      reasonList(row.reason),
+    ]))),
   ]);
 }
 
@@ -1237,6 +1258,162 @@ function downloadSessionsCsv() {
     }
   }
   download(`sessions-${data.fy.label.replace("/", "-")}.csv`, rows);
+}
+
+function parseStamp(value) {
+  const [date, time] = String(value || "").split("T");
+  const [year, month, day] = date.split("-").map(Number);
+  const [hour, minute] = (time || "00:00").split(":").map(Number);
+  return new Date(year, (month || 1) - 1, day || 1, hour || 0, minute || 0);
+}
+
+function sameDay(left, right) {
+  return left.getFullYear() === right.getFullYear()
+    && left.getMonth() === right.getMonth()
+    && left.getDate() === right.getDate();
+}
+
+function clock(value) {
+  return String(value || "").slice(11, 16);
+}
+
+function monthOverlaps(item, year, month) {
+  const start = new Date(year, month, 1);
+  const end = new Date(year, month + 1, 1);
+  return item.start < end && item.end > start;
+}
+
+function coversDay(start, end, day) {
+  const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate());
+  const next = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1);
+  return start < next && end > dayStart;
+}
+
+function calendarWho(item) {
+  if (item.kind === "duty") return item.people.length ? item.people.join(", ") : "Unassigned";
+  return item.headcount === 1 ? "1 attended" : `${item.headcount} attended`;
+}
+
+function calendarTitle(item) {
+  const when = `${prettyWhen(item.startIso)} to ${prettyWhen(item.endIso)}`;
+  const who = item.kind === "duty"
+    ? (item.people.length ? `On duty: ${item.people.join(", ")}` : "Nobody assigned")
+    : calendarWho(item);
+  const note = item.remarks ? `. ${item.remarks}` : "";
+  return `${item.kind === "duty" ? "Duty" : "Training"} ${item.code}, ${when}. ${who}${note}`;
+}
+
+function calendarLabel(item, day) {
+  if (sameDay(item.start, item.end)) return `${item.code} ${clock(item.startIso)}–${clock(item.endIso)}`;
+  if (sameDay(item.start, day)) return `${item.code} ${clock(item.startIso)}`;
+  if (sameDay(item.end, day)) return `${item.code} until ${clock(item.endIso)}`;
+  return item.code;
+}
+
+function shiftCalendar(step) {
+  const current = state.calendar || { year: new Date().getFullYear(), month: new Date().getMonth() };
+  const next = new Date(current.year, current.month + step, 1);
+  state.calendar = { year: next.getFullYear(), month: next.getMonth() };
+  renderCalendar();
+}
+
+function toggleCalendarKind(kind) {
+  state.calendarShow[kind] = !state.calendarShow[kind];
+  const button = $(kind === "training" ? "cal-training" : "cal-duties");
+  button.classList.toggle("is-on", state.calendarShow[kind]);
+  button.setAttribute("aria-pressed", state.calendarShow[kind] ? "true" : "false");
+  renderCalendar();
+}
+
+async function renderCalendar() {
+  const [events, trainings] = await Promise.all([api("/api/events"), api("/api/trainings")]);
+  const items = [
+    ...events.events.map((item) => ({
+      kind: "duty",
+      id: item.id,
+      code: item.duty_code,
+      startIso: item.start_datetime,
+      endIso: item.end_datetime,
+      start: parseStamp(item.start_datetime),
+      end: parseStamp(item.end_datetime),
+      remarks: item.remarks || "",
+      people: item.assigned_member_ids || [],
+    })),
+    ...trainings.trainings.map((item) => ({
+      kind: "training",
+      id: item.id,
+      code: item.training_code,
+      startIso: item.start_datetime,
+      endIso: item.end_datetime,
+      start: parseStamp(item.start_datetime),
+      end: parseStamp(item.end_datetime),
+      remarks: item.remarks || "",
+      headcount: (item.attendee_ids || []).length,
+    })),
+  ];
+  if (!state.calendar) {
+    const today = new Date();
+    const here = items.some((item) => monthOverlaps(item, today.getFullYear(), today.getMonth()));
+    const focus = here ? today : (items.slice().sort((a, b) => a.start - b.start)[0]?.start || today);
+    state.calendar = { year: focus.getFullYear(), month: focus.getMonth() };
+  }
+  const { year, month } = state.calendar;
+  $("cal-title").textContent = new Date(year, month, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  for (const [id, kind] of [["cal-training", "training"], ["cal-duties", "duties"]]) {
+    const on = state.calendarShow[kind];
+    $(id).classList.toggle("is-on", on);
+    $(id).setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  const visible = items.filter((item) => (
+    (item.kind === "duty" && state.calendarShow.duties) || (item.kind === "training" && state.calendarShow.training)
+  ));
+  const first = new Date(year, month, 1);
+  const lead = (first.getDay() + 6) % 7;
+  const gridStart = new Date(year, month, 1 - lead);
+  const today = new Date();
+  const weeks = h("div", { class: "cal-grid" });
+  for (const name of ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]) {
+    weeks.append(h("div", { class: "cal-head", text: name }));
+  }
+  for (let index = 0; index < 42; index += 1) {
+    const day = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
+    const dayItems = visible
+      .filter((item) => coversDay(item.start, item.end, day))
+      .sort((a, b) => a.start - b.start || a.code.localeCompare(b.code));
+    const cell = h("div", {
+      class: [
+        "cal-day",
+        day.getMonth() === month ? "" : "is-out",
+        sameDay(day, today) ? "is-today" : "",
+      ].filter(Boolean).join(" "),
+    }, [
+      h("div", { class: "cal-num", text: String(day.getDate()) }),
+      ...dayItems.map((item) => h("button", {
+        type: "button",
+        class: `cal-item ${item.kind === "duty" ? "cal-duty" : "cal-training"}`,
+        title: calendarTitle(item),
+        onClick: () => {
+          if (item.kind === "duty") openAssign(item.id);
+          else {
+            state.trainingId = item.id;
+            showTab("training");
+          }
+        },
+      }, [
+        h("span", { class: "cal-code", text: calendarLabel(item, day) }),
+        h("span", { class: "cal-who", text: calendarWho(item) }),
+      ])),
+    ]);
+    weeks.append(cell);
+  }
+  const host = $("calendar");
+  host.replaceChildren(weeks);
+  const monthHas = visible.some((item) => monthOverlaps(item, year, month));
+  if (!state.calendarShow.training && !state.calendarShow.duties) {
+    host.append(h("p", { class: "muted cal-empty", text: "Select Training, Duties, or both." }));
+  } else if (!monthHas) {
+    host.append(h("p", { class: "muted cal-empty", text: "No training or duties this month." }));
+  }
 }
 
 async function saveRoster() {
