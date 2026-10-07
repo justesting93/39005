@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Duty Party Roster</title>
   <link rel="stylesheet" href="/static/styles.css">
+  <script>
+    (function () {
+      var theme = localStorage.getItem("roster-theme");
+      if (theme !== "light" && theme !== "dark") theme = "dark";
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
 </head>
 <body>
   <header>
@@ -13,6 +20,15 @@
       <h1>Duty Party Roster</h1>
     </div>
     <div class="header-actions">
+      <button type="button" id="theme-toggle" class="secondary icon-button" aria-pressed="false" aria-label="Switch to light theme" title="Light theme">
+        <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+          <path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.1 5.1l1.6 1.6M17.3 17.3l1.6 1.6M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path>
+        </svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"></path>
+        </svg>
+      </button>
       <label class="fy-control" id="fy-control">Financial year
         <select id="fy-select"></select>
       </label>
@@ -23,7 +39,7 @@
     </div>
     <nav aria-label="Sections">
       <button type="button" data-tab="members" class="is-on" aria-pressed="true">Members</button>
-      <button type="button" data-tab="events" aria-pressed="false">Events</button>
+      <button type="button" data-tab="events" aria-pressed="false">Duties</button>
       <button type="button" data-tab="training" aria-pressed="false">Training</button>
       <button type="button" data-tab="assign" aria-pressed="false">Assign</button>
       <button type="button" data-tab="selection" aria-pressed="false">Selection report</button>
@@ -80,7 +96,7 @@
 
     <section data-panel="events" hidden>
       <div class="panel-head">
-        <h2>Events</h2>
+        <h2>Duties</h2>
         <p>A duty has a code, a start, an end, and the number of members required. Hours are the time between start and end. An assigned member who is late or leaves early can have fewer attend hours than that.</p>
       </div>
       <form id="event-form" class="inline-form">
@@ -89,7 +105,7 @@
         <label>Duty end <span data-when="end_datetime" data-when-label="Duty end"></span></label>
         <label>Required members <input name="required_members" type="number" min="1" max="500" value="1" required></label>
         <label>Remarks <input name="remarks" maxlength="500" autocomplete="off"></label>
-        <button type="submit">Add event</button>
+        <button type="submit">Add duty</button>
         <span class="pair">
           <button type="button" id="export-events" class="secondary">Export</button>
           <button type="button" id="import-events" class="secondary" title="CSV with Duty code, Duty start, Duty end, Required members, and Remarks.">Import</button>

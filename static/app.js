@@ -335,6 +335,20 @@ async function init() {
     state.fy = Number($("fy-select").value);
     await refresh();
   });
+  function paintThemeToggle() {
+    const light = document.documentElement.dataset.theme === "light";
+    const button = $("theme-toggle");
+    button.setAttribute("aria-pressed", light ? "true" : "false");
+    button.setAttribute("aria-label", light ? "Switch to dark theme" : "Switch to light theme");
+    button.title = light ? "Dark theme" : "Light theme";
+  }
+  paintThemeToggle();
+  $("theme-toggle").addEventListener("click", () => {
+    const theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("roster-theme", theme);
+    paintThemeToggle();
+  });
   $("restore").addEventListener("click", restoreSample);
   $("save-roster").addEventListener("click", saveRoster);
   $("open-roster").addEventListener("click", () => $("roster-file").click());
@@ -723,6 +737,7 @@ async function renderEvents() {
   for (const item of data.events) {
     body.append(h("tr", {}, [
       h("td", {}, h("input", {
+        class: "code",
         value: item.duty_code,
         "aria-label": `Duty code ${item.duty_code}`,
         onChange: (event) => saveEvent(item, { duty_code: event.target.value.trim() }),
@@ -819,7 +834,7 @@ async function addEvent(event) {
       }),
     });
     event.target.reset();
-    banner("Event added.", "ok");
+    banner("Duty added.", "ok");
     await renderEvents();
   } catch (error) {
     banner(error.message, "error");
@@ -1022,7 +1037,7 @@ async function renderAssign() {
   const data = await api("/api/events");
   const host = $("assign-body");
   if (!data.events.length) {
-    host.replaceChildren(h("p", { text: "Add a duty on the Events tab first." }));
+    host.replaceChildren(h("p", { text: "Add a duty on the Duties tab first." }));
     return;
   }
   if (!state.eventId || !data.events.some((item) => item.id === state.eventId)) {
@@ -1428,21 +1443,30 @@ function filteredSessionRows(data) {
   return data.rows.filter((row) => row.member_id.toLowerCase().includes(query));
 }
 
-function sessionTable(title, codeKey, items) {
-  const heading = h("h4", { text: title });
-  if (!items.length) return [heading, h("p", { class: "muted", text: `No ${title.toLowerCase()} this financial year.` })];
-  const table = h("div", { class: "table-wrap" }, h("table", {}, [
-    h("thead", {}, h("tr", {}, ["Code", "Start", "End", "Scheduled", "Attend hours", "Remarks"].map((label) => h("th", { text: label })))),
+function memberSessions(row) {
+  const items = [];
+  if (state.sessionShow.training) {
+    for (const item of row.trainings) items.push({ ...item, type: "Training", code: item.training_code });
+  }
+  if (state.sessionShow.duties) {
+    for (const item of row.duties) items.push({ ...item, type: "Duties", code: item.duty_code });
+  }
+  items.sort((a, b) => String(a.start_datetime).localeCompare(String(b.start_datetime)) || a.code.localeCompare(b.code));
+  return items;
+}
+
+function sessionTable(items) {
+  return h("div", { class: "table-wrap" }, h("table", {}, [
+    h("thead", {}, h("tr", {}, ["Type", "Code", "Start", "End", "Actual attend hours", "Remarks"].map((label) => h("th", { text: label })))),
     h("tbody", {}, items.map((item) => h("tr", {}, [
-      h("td", { text: item[codeKey] }),
+      h("td", { text: item.type }),
+      h("td", { text: item.code }),
       h("td", { text: prettyWhen(item.start_datetime) }),
       h("td", { text: prettyWhen(item.end_datetime) }),
-      h("td", { text: fmtHours(item.hours) }),
       h("td", { text: fmtHours(item.attend_hours) }),
       h("td", { text: item.remarks || "" }),
     ]))),
   ]));
-  return [heading, table];
 }
 
 function paintSessions(data) {
@@ -1457,9 +1481,9 @@ function paintSessions(data) {
     return;
   }
   const blocks = rows.map((row) => {
+    const items = memberSessions(row);
     const parts = [h("h3", { text: `${row.member_id} · ${row.party}` })];
-    if (state.sessionShow.training) parts.push(...sessionTable("Training", "training_code", row.trainings));
-    if (state.sessionShow.duties) parts.push(...sessionTable("Duties", "duty_code", row.duties));
+    parts.push(items.length ? sessionTable(items) : h("p", { class: "muted", text: "No sessions this financial year." }));
     return h("section", { class: "member-block" }, parts);
   });
   host.replaceChildren(...blocks);
@@ -1472,33 +1496,26 @@ function downloadSessionsCsv() {
     "Financial year",
     "Member ID",
     "Duty party",
-    "Kind",
+    "Type",
     "Code",
     "Start",
     "End",
-    "Scheduled hours",
-    "Attend hours",
+    "Actual attend hours",
     "Remarks",
   ]];
   for (const row of filteredSessionRows(data)) {
-    const groups = [];
-    if (state.sessionShow.training) groups.push(["Training", "training_code", row.trainings]);
-    if (state.sessionShow.duties) groups.push(["Duty", "duty_code", row.duties]);
-    for (const [kind, codeKey, items] of groups) {
-      for (const item of items) {
-        rows.push([
-          data.fy.label,
-          row.member_id,
-          row.party,
-          kind,
-          item[codeKey],
-          item.start_datetime,
-          item.end_datetime,
-          item.hours,
-          item.attend_hours,
-          item.remarks || "",
-        ]);
-      }
+    for (const item of memberSessions(row)) {
+      rows.push([
+        data.fy.label,
+        row.member_id,
+        row.party,
+        item.type,
+        item.code,
+        item.start_datetime,
+        item.end_datetime,
+        item.attend_hours,
+        item.remarks || "",
+      ]);
     }
   }
   download(`sessions-${data.fy.label.replace("/", "-")}.csv`, rows);
