@@ -309,7 +309,7 @@ function whenField({ name, value, label, onCommit }) {
 }
 
 function partySelect(selected, onChange) {
-  const select = h("select", { "aria-label": "Duty party", onChange });
+  const select = h("select", { class: "party", "aria-label": "Duty party", onChange });
   for (const party of ["DP1", "DP2", "DP3"]) {
     select.append(h("option", { value: party, text: party, selected: party === selected }));
   }
@@ -431,6 +431,7 @@ async function renderMembers() {
   }
   for (const member of data.members) {
     const idInput = h("input", {
+      class: "member-id",
       value: member.member_id,
       "aria-label": `Member ID ${member.member_id}`,
       maxlength: "32",
@@ -439,6 +440,7 @@ async function renderMembers() {
       },
     });
     const nameInput = h("input", {
+      class: "name",
       value: member.name || "",
       "aria-label": `Name for ${member.member_id}`,
       maxlength: "80",
@@ -447,6 +449,7 @@ async function renderMembers() {
       },
     });
     const orderInput = h("input", {
+      class: "queue",
       type: "number",
       min: "1",
       value: member.queue_order,
@@ -467,10 +470,10 @@ async function renderMembers() {
         h("td", {}, nameInput),
         h("td", {}, partySelect(member.party, (event) => saveMember(member.id, { party: event.target.value }))),
         h("td", {}, orderInput),
-        h("td", { text: fmtHours(member.attend_hours) }),
-        h("td", { text: `${fmtHours(member.training_hours)} / ${fmtHours(member.training_offered)}` }),
-        h("td", { text: fmtHours(member.duty_hours) }),
-        h("td", { text: String(member.duty_count) }),
+        h("td", { class: "num", text: fmtHours(member.attend_hours) }),
+        h("td", { class: "num", text: `${fmtHours(member.training_hours)} / ${fmtHours(member.training_offered)}` }),
+        h("td", { class: "num", text: fmtHours(member.duty_hours) }),
+        h("td", { class: "num", text: String(member.duty_count) }),
         h("td", {}, h("span", { class: member.meets_requirement ? "status met" : "status", text: member.status })),
         h("td", {}, h("div", { class: "actions" }, [
           h("button", { type: "button", class: "secondary", text: "Up", "aria-label": `Move ${member.member_id} up`, onClick: () => moveMember(member.id, "up") }),
@@ -859,6 +862,7 @@ async function renderTraining() {
   for (const item of trainingData.trainings) {
     body.append(h("tr", {}, [
       h("td", {}, h("input", {
+        class: "code",
         value: item.training_code,
         "aria-label": `Training code ${item.training_code}`,
         onChange: (event) => saveTraining(item, { training_code: event.target.value.trim() }),
@@ -1456,11 +1460,11 @@ function memberSessions(row) {
 }
 
 function sessionTable(items) {
-  return h("div", { class: "table-wrap" }, h("table", {}, [
+  return h("div", { class: "table-wrap" }, h("table", { class: "session-table" }, [
     h("thead", {}, h("tr", {}, ["Type", "Code", "Start", "End", "Actual attend hours", "Remarks"].map((label) => h("th", { text: label })))),
     h("tbody", {}, items.map((item) => h("tr", {}, [
       h("td", { text: item.type }),
-      h("td", { text: item.code }),
+      h("td", { class: "code-cell", text: item.code }),
       h("td", { text: prettyWhen(item.start_datetime) }),
       h("td", { text: prettyWhen(item.end_datetime) }),
       h("td", { text: fmtHours(item.attend_hours) }),
